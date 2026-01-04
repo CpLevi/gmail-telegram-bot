@@ -1,8 +1,9 @@
-# SECURE TASK EARNING BOT - PRODUCTION READY v4.0
-# Install: pip install python-telegram-bot==20.7
+# SECURE TASK EARNING BOT - PRODUCTION READY v4.0 - PostgreSQL Compatible
+# Install: pip install python-telegram-bot==20.7 psycopg2-binary
 
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import re
 import logging
 from datetime import datetime, timedelta
@@ -22,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ==================== CONFIGURATION ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "database.db")
 
 # 🔒 SECURITY: Use environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-if not BOT_TOKEN or not ADMIN_ID_RAW:
-    raise RuntimeError("BOT_TOKEN or ADMIN_ID is not set in environment variables")
+if not BOT_TOKEN or not ADMIN_ID_RAW or not DATABASE_URL:
+    raise RuntimeError("Missing required environment variables")
 
 ADMIN_ID = int(ADMIN_ID_RAW)
 
@@ -43,8 +44,8 @@ MAX_PAGINATION_PAGE = 100
 MAX_WITHDRAWALS_PER_DAY = 2
 
 # Withdrawal fees
-WITHDRAWAL_FEE_PERCENT = 2  # 2% fee
-WITHDRAWAL_FEE_MIN = 5  # Minimum ₹5 fee
+WITHDRAWAL_FEE_PERCENT = 2
+WITHDRAWAL_FEE_MIN = 5
 
 # Allowed email domains
 ALLOWED_DOMAINS = ['gmail.com', 'googlemail.com']
@@ -55,8 +56,7 @@ EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH 
 # ==================== DATABASE CONTEXT MANAGER ====================
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     try:
         yield conn
         conn.commit()
@@ -74,14 +74,14 @@ def init_db():
         
         # Users table
         c.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             username TEXT,
             first_name TEXT,
             balance REAL DEFAULT 0,
             total_gmail INTEGER DEFAULT 0,
             approved_gmail INTEGER DEFAULT 0,
             is_blocked INTEGER DEFAULT 0,
-            referrer_id INTEGER,
+            referrer_id BIGINT,
             usdt_address TEXT,
             upi_id TEXT,
             joined_date TEXT,
@@ -94,8 +94,8 @@ def init_db():
         
         # Gmail submissions table
         c.execute('''CREATE TABLE IF NOT EXISTS gmail (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
             email TEXT,
             password TEXT,
             status TEXT DEFAULT 'pending',
@@ -108,8 +108,8 @@ def init_db():
         
         # Withdrawals table
         c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            user_id BIGINT,
             amount REAL,
             fee REAL DEFAULT 0,
             final_amount REAL,
@@ -123,9 +123,9 @@ def init_db():
         
         # Referrals table
         c.execute('''CREATE TABLE IF NOT EXISTS referrals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            referrer_id INTEGER,
-            referred_id INTEGER,
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT,
+            referred_id BIGINT,
             reward REAL DEFAULT 5,
             date TEXT,
             rewarded INTEGER DEFAULT 0,
@@ -134,10 +134,10 @@ def init_db():
         
         # Audit log table
         c.execute('''CREATE TABLE IF NOT EXISTS audit_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             action TEXT,
-            admin_id INTEGER,
-            target_user_id INTEGER,
+            admin_id BIGINT,
+            target_user_id BIGINT,
             details TEXT,
             timestamp TEXT
         )''')
@@ -159,12 +159,12 @@ def init_db():
         for table, column, definition in columns_to_add:
             try:
                 c.execute(f"SELECT {column} FROM {table} LIMIT 1")
-            except sqlite3.OperationalError:
+            except psycopg2.Error:
                 logger.info(f"Adding {column} column to {table} table")
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                 conn.commit()
         
-        # ✅ FIX: Update existing referrals to new reward amount
+        # Update existing referrals to new reward amount
         try:
             c.execute("UPDATE referrals SET reward = 5 WHERE reward != 5")
             conn.commit()
@@ -201,7 +201,6 @@ def validate_email(email):
     if not re.match(pattern, email):
         return False, "Invalid email format"
     
-    # Check domain
     domain = email.split('@')[-1].lower()
     if domain not in ALLOWED_DOMAINS:
         return False, f"Only {', '.join(ALLOWED_DOMAINS)} allowed"
@@ -257,8 +256,8 @@ def can_submit_gmail(user_id):
     with get_db() as conn:
         c = conn.cursor()
         try:
-            c.execute("SELECT last_submit_time FROM users WHERE user_id=?", (user_id,))
-        except sqlite3.OperationalError:
+            c.execute("SELECT last_submit_time FROM users WHERE user_id=%s", (user_id,))
+        except psycopg2.Error:
             c.execute("ALTER TABLE users ADD COLUMN last_submit_time TEXT")
             conn.commit()
             return True, 0
@@ -278,7 +277,7 @@ def can_submit_gmail(user_id):
 def update_submit_time(user_id):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("UPDATE users SET last_submit_time=? WHERE user_id=?", 
+        c.execute("UPDATE users SET last_submit_time=%s WHERE user_id=%s", 
                  (datetime.now().isoformat(), user_id))
 
 def can_withdraw_today(user_id):
@@ -287,7 +286,7 @@ def can_withdraw_today(user_id):
         c = conn.cursor()
         today = datetime.now().date().isoformat()
         c.execute("""SELECT COUNT(*) FROM withdrawals 
-                    WHERE user_id=? AND DATE(request_date)=? AND status IN ('pending', 'approved')""",
+                    WHERE user_id=%s AND request_date::date=%s AND status IN ('pending', 'approved')""",
                  (user_id, today))
         count = c.fetchone()[0]
         return count < MAX_WITHDRAWALS_PER_DAY, MAX_WITHDRAWALS_PER_DAY - count
@@ -296,7 +295,7 @@ def check_duplicate_email(email):
     """Check if email exists across all users"""
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id, status FROM gmail WHERE email=? LIMIT 1", (email,))
+        c.execute("SELECT user_id, status FROM gmail WHERE email=%s LIMIT 1", (email,))
         result = c.fetchone()
         return result
 
@@ -306,7 +305,7 @@ def log_audit(action, admin_id, target_user_id=None, details=""):
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""INSERT INTO audit_log (action, admin_id, target_user_id, details, timestamp)
-                        VALUES (?, ?, ?, ?, ?)""",
+                        VALUES (%s, %s, %s, %s, %s)""",
                      (action, admin_id, target_user_id, details, datetime.now().isoformat()))
     except Exception as e:
         logger.error(f"Audit log error: {e}")
@@ -327,7 +326,7 @@ async def check_channel(user_id, context):
 def calc_rate(user_id):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT approved_gmail FROM users WHERE user_id=?", (user_id,))
+        c.execute("SELECT approved_gmail FROM users WHERE user_id=%s", (user_id,))
         result = c.fetchone()
         approved = result['approved_gmail'] if result else 0
         
@@ -340,7 +339,7 @@ def calc_rate(user_id):
 def is_blocked(user_id):
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,))
+        c.execute("SELECT is_blocked FROM users WHERE user_id=%s", (user_id,))
         result = c.fetchone()
         return result['is_blocked'] == 1 if result else False
 
@@ -349,10 +348,10 @@ def notifications_enabled(user_id):
     try:
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT notifications_enabled FROM users WHERE user_id=?", (user_id,))
+            c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (user_id,))
             result = c.fetchone()
             return result['notifications_enabled'] == 1 if result else True
-    except sqlite3.OperationalError as e:
+    except psycopg2.Error as e:
         logger.error(f"notifications_enabled error for user {user_id}: {e}")
         return True
     except Exception as e:
@@ -392,19 +391,19 @@ def get_earnings_stats(user_id, period='all'):
         
         # Gmail earnings
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM gmail 
-                    WHERE user_id=? AND status='approved' AND review_date >= ?""",
+                    WHERE user_id=%s AND status='approved' AND review_date >= %s""",
                  (user_id, start_date))
         gmail_earnings = c.fetchone()[0]
         
         # Referral earnings
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM referrals 
-                    WHERE referrer_id=? AND rewarded=1 AND date >= ?""",
+                    WHERE referrer_id=%s AND rewarded=1 AND date >= %s""",
                  (user_id, start_date))
         referral_earnings = c.fetchone()[0]
         
         # Channel bonus (one-time)
         if period == 'all':
-            c.execute("SELECT channel_claimed FROM users WHERE user_id=?", (user_id,))
+            c.execute("SELECT channel_claimed FROM users WHERE user_id=%s", (user_id,))
             result = c.fetchone()
             channel_bonus = 1 if result and result['channel_claimed'] else 0
         else:
@@ -416,7 +415,6 @@ def get_earnings_stats(user_id, period='all'):
             'channel': channel_bonus,
             'total': gmail_earnings + referral_earnings + channel_bonus
         }
-    
 # ==================== START COMMAND ====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -442,27 +440,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id FROM users WHERE user_id=?", (user.id,))
+        c.execute("SELECT user_id FROM users WHERE user_id=%s", (user.id,))
         existing = c.fetchone()
         
         if not existing:
             c.execute("""INSERT INTO users (user_id, username, first_name, referrer_id, joined_date)
-                         VALUES (?, ?, ?, ?, ?)""",
+                         VALUES (%s, %s, %s, %s, %s)""",
                       (user.id, user.username, user.first_name, ref_id, datetime.now().isoformat()))
             
-            # ✅ FIX: Register referral but DON'T reward yet
+            # Register referral but DON'T reward yet
             if ref_id:
-                c.execute("SELECT user_id FROM users WHERE user_id=?", (ref_id,))
+                c.execute("SELECT user_id FROM users WHERE user_id=%s", (ref_id,))
                 if c.fetchone():
                     try:
-                        c.execute("SELECT id FROM referrals WHERE referred_id=?", (user.id,))
+                        c.execute("SELECT id FROM referrals WHERE referred_id=%s", (user.id,))
                         if not c.fetchone():
-                            c.execute("INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded) VALUES (?,?,?,?,?)",
+                            c.execute("INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded) VALUES (%s,%s,%s,%s,%s)",
                                      (ref_id, user.id, 5, datetime.now().isoformat(), 0))
                             await notify_user(context, ref_id, 
                                 f"🎉 {user.first_name} joined via your link!\n\n"
                                 f"You'll earn ₹5 when they complete their first approved Gmail submission.")
-                    except sqlite3.IntegrityError:
+                    except psycopg2.IntegrityError:
                         pass
     
     kb = [
@@ -482,7 +480,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT channel_claimed FROM users WHERE user_id=?", (user.id,))
+        c.execute("SELECT channel_claimed FROM users WHERE user_id=%s", (user.id,))
         result = c.fetchone()
         claimed = result['channel_claimed'] if result else 0
     
@@ -527,11 +525,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if await check_channel(q.from_user.id, context):
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT channel_claimed FROM users WHERE user_id=?", (q.from_user.id,))
+                c.execute("SELECT channel_claimed FROM users WHERE user_id=%s", (q.from_user.id,))
                 result = c.fetchone()
                 
                 if result and result['channel_claimed'] == 0:
-                    c.execute("UPDATE users SET balance=balance+1, channel_claimed=1 WHERE user_id=?", 
+                    c.execute("UPDATE users SET balance=balance+1, channel_claimed=1 WHERE user_id=%s", 
                              (q.from_user.id,))
                     await q.answer("✅ ₹1 added!", show_alert=True)
                     await q.message.reply_text("🎉 **₹1 credited!**\n\nThank you for joining!")
@@ -596,11 +594,11 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "balance":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT balance, total_gmail, approved_gmail FROM users WHERE user_id=?", 
+            c.execute("SELECT balance, total_gmail, approved_gmail FROM users WHERE user_id=%s", 
                      (q.from_user.id,))
             result = c.fetchone()
             
-            c.execute("SELECT SUM(reward) FROM gmail WHERE user_id=? AND status='pending'", 
+            c.execute("SELECT SUM(reward) FROM gmail WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
             pending = c.fetchone()[0] or 0
         
@@ -617,10 +615,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📧 Total: {total}"""
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📙", callback_data="menu")]
+            [InlineKeyboardButton("🔙", callback_data="menu")]
         ]), parse_mode='Markdown')
     
-    # ✅ NEW: EARNINGS DASHBOARD
+    # EARNINGS DASHBOARD
     elif d == "earnings" or d.startswith("earnings_"):
         period = d.split("_")[1] if "_" in d else "all"
         
@@ -648,7 +646,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📅 Week", callback_data="earnings_week")],
             [InlineKeyboardButton("📅 Month", callback_data="earnings_month"),
              InlineKeyboardButton("📅 All Time", callback_data="earnings_all")],
-            [InlineKeyboardButton("📙 Back", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -657,13 +655,13 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "referral":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=?", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (q.from_user.id,))
             ref_count = c.fetchone()[0]
             
-            c.execute("SELECT SUM(reward) FROM referrals WHERE referrer_id=? AND rewarded=1", (q.from_user.id,))
+            c.execute("SELECT SUM(reward) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
             total_earned = c.fetchone()[0] or 0
             
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded=0", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (q.from_user.id,))
             pending_refs = c.fetchone()[0]
         
         bot_user = context.bot.username
@@ -689,7 +687,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         
         kb = [
             [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
-            [InlineKeyboardButton("📙 Back", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
@@ -701,12 +699,11 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                         FROM users u
                         JOIN referrals r ON u.user_id = r.referrer_id
                         WHERE r.rewarded = 1
-                        GROUP BY u.user_id
+                        GROUP BY u.user_id, u.first_name, u.username
                         ORDER BY ref_count DESC
                         LIMIT 10""")
             top_referrers = c.fetchall()
             
-            # ✅ FIX: Get current user's rank properly
             c.execute("""SELECT COUNT(DISTINCT referrer_id) + 1 as rank
                         FROM referrals
                         WHERE rewarded = 1 AND referrer_id IN (
@@ -714,13 +711,13 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                             WHERE rewarded = 1
                             GROUP BY referrer_id
                             HAVING COUNT(*) > (
-                                SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded=1
+                                SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1
                             )
                         )""", (q.from_user.id,))
             result = c.fetchone()
             user_rank = result[0] if result else "N/A"
             
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded=1", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
             user_refs = c.fetchone()[0]
         
         text = "🏆 **Referral Leaderboard**\n\n"
@@ -735,15 +732,14 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         else:
             text += "No referrals yet. Be the first!\n"
         
-        text += f"\n📍 **Your Rank:** #{user_rank}\n"
+        text += f"\n🔍 **Your Rank:** #{user_rank}\n"
         text += f"👥 **Your Referrals:** {user_refs}"
         
         kb = [
-            [InlineKeyboardButton("📙 Back", callback_data="referral")]
+            [InlineKeyboardButton("🔙 Back", callback_data="referral")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-    
-    # HISTORY - Gmail submissions
+# HISTORY - Gmail submissions
     elif d == "history" or d.startswith("history_gmail_"):
         page = validate_page(d.split("_")[-1]) if "_" in d else 0
         offset = page * 5
@@ -751,11 +747,11 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT email, status, reward, submit_date, rejection_reason 
-                        FROM gmail WHERE user_id=? ORDER BY submit_date DESC 
-                        LIMIT 5 OFFSET ?""", (q.from_user.id, offset))
+                        FROM gmail WHERE user_id=%s ORDER BY submit_date DESC 
+                        LIMIT 5 OFFSET %s""", (q.from_user.id, offset))
             subs = c.fetchall()
             
-            c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s", (q.from_user.id,))
             total = c.fetchone()[0]
         
         text = f"📋 **Gmail History** (Page {page+1})\n\n"
@@ -779,7 +775,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             kb.append(nav)
         
         kb.append([InlineKeyboardButton("💸 Withdrawal History", callback_data="history_withdrawal_0")])
-        kb.append([InlineKeyboardButton("📙 Back", callback_data="menu")])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
@@ -791,11 +787,11 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT amount, fee, final_amount, method, status, request_date, processed_date, rejection_reason 
-                        FROM withdrawals WHERE user_id=? ORDER BY request_date DESC 
-                        LIMIT 5 OFFSET ?""", (q.from_user.id, offset))
+                        FROM withdrawals WHERE user_id=%s ORDER BY request_date DESC 
+                        LIMIT 5 OFFSET %s""", (q.from_user.id, offset))
             withdrawals = c.fetchall()
             
-            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s", (q.from_user.id,))
             total = c.fetchone()[0]
         
         text = f"💸 **Withdrawal History** (Page {page+1})\n\n"
@@ -804,7 +800,6 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[w['status']]
                 method_emoji = "📱" if w['method'] == 'upi' else "💎"
                 
-                # ✅ FIX: Handle NULL values for old withdrawals
                 fee = w['fee'] if w['fee'] is not None else 0
                 final_amount = w['final_amount'] if w['final_amount'] is not None else w['amount']
                 
@@ -827,23 +822,22 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             kb.append(nav)
         
         kb.append([InlineKeyboardButton("📧 Gmail History", callback_data="history_gmail_0")])
-        kb.append([InlineKeyboardButton("📙 Back", callback_data="menu")])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
 
-# WITHDRAW
+    # WITHDRAW
     elif d == "withdraw":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT balance, usdt_address, upi_id FROM users WHERE user_id=?", 
+            c.execute("SELECT balance, usdt_address, upi_id FROM users WHERE user_id=%s", 
                      (q.from_user.id,))
             result = c.fetchone()
             
-            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=? AND status='pending'", 
+            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
             pending_count = c.fetchone()[0]
         
-        # Check daily withdrawal limit
         can_withdraw, remaining = can_withdraw_today(q.from_user.id)
         
         if result:
@@ -851,33 +845,32 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             
             if not can_withdraw:
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Daily limit reached!\nYou can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day.\n\nTry again tomorrow."
-                kb = [[InlineKeyboardButton("📙", callback_data="menu")]]
+                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
             elif pending_count >= MAX_PENDING_WITHDRAWALS:
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ You have {pending_count} pending requests.\nWait for processing."
-                kb = [[InlineKeyboardButton("📙", callback_data="menu")]]
+                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
             elif bal < 100:
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Minimum: ₹100"
-                kb = [[InlineKeyboardButton("📙", callback_data="menu")]]
+                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
             else:
-                # Calculate example fee
                 example_fee, example_final = calculate_withdrawal_fee(100)
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n**Min:** ₹100\n**Today:** {remaining}/{MAX_WITHDRAWALS_PER_DAY} left\n\n**Fee:** {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n*Example: ₹100 → Fee ₹{example_fee:.2f} → You get ₹{example_final:.2f}*\n\nChoose method:"
                 kb = [
                     [InlineKeyboardButton("📱 UPI" + (" ✅" if upi else ""), callback_data="withdraw_upi")],
                     [InlineKeyboardButton("💎 USDT" + (" ✅" if usdt else ""), callback_data="withdraw_usdt")],
                     [InlineKeyboardButton("⚙️ Setup", callback_data="setup_payment")],
-                    [InlineKeyboardButton("📙", callback_data="menu")]
+                    [InlineKeyboardButton("🔙", callback_data="menu")]
                 ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         else:
             await q.edit_message_text("❌ Error!", 
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📙", callback_data="menu")]]))
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="menu")]]))
     
     # WITHDRAW UPI
     elif d == "withdraw_upi":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT upi_id FROM users WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT upi_id FROM users WHERE user_id=%s", (q.from_user.id,))
             result = c.fetchone()
         
         if not result or not result['upi_id']:
@@ -895,7 +888,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
     elif d == "withdraw_usdt":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT usdt_address FROM users WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT usdt_address FROM users WHERE user_id=%s", (q.from_user.id,))
             result = c.fetchone()
         
         if not result or not result['usdt_address']:
@@ -914,7 +907,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb = [
             [InlineKeyboardButton("📱 UPI", callback_data="set_upi")],
             [InlineKeyboardButton("💎 USDT", callback_data="set_usdt")],
-            [InlineKeyboardButton("📙", callback_data="withdraw")]
+            [InlineKeyboardButton("🔙", callback_data="withdraw")]
         ]
         await q.edit_message_text("⚙️ **Setup Payment**\n\nChoose:", 
                                   reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -933,11 +926,11 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
     elif d == "profile":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT balance, approved_gmail, usdt_address, upi_id, joined_date FROM users WHERE user_id=?", 
+            c.execute("SELECT balance, approved_gmail, usdt_address, upi_id, joined_date FROM users WHERE user_id=%s", 
                      (q.from_user.id,))
             result = c.fetchone()
             
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=? AND rewarded=1", (q.from_user.id,))
+            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
             ref_count = c.fetchone()[0]
         
         if result:
@@ -959,7 +952,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             
             kb = [
                 [InlineKeyboardButton("⚙️ Payment", callback_data="setup_payment")],
-                [InlineKeyboardButton("📙", callback_data="menu")]
+                [InlineKeyboardButton("🔙", callback_data="menu")]
             ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
@@ -967,7 +960,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
     elif d == "settings":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("SELECT notifications_enabled FROM users WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (q.from_user.id,))
             result = c.fetchone()
             notif = result['notifications_enabled'] if result else 1
         
@@ -982,7 +975,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             [InlineKeyboardButton("🔕 OFF" if notif else "🔔 ON", callback_data="toggle_notif")],
             [InlineKeyboardButton("📜 Terms", callback_data="view_terms")],
             [InlineKeyboardButton("📞 Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("📙", callback_data="menu")]
+            [InlineKeyboardButton("🔙", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
@@ -990,9 +983,9 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
     elif d == "toggle_notif":
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("UPDATE users SET notifications_enabled = 1 - notifications_enabled WHERE user_id=?", 
+            c.execute("UPDATE users SET notifications_enabled = 1 - notifications_enabled WHERE user_id=%s", 
                      (q.from_user.id,))
-            c.execute("SELECT notifications_enabled FROM users WHERE user_id=?", (q.from_user.id,))
+            c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (q.from_user.id,))
             new_state = c.fetchone()[0]
         
         await q.answer(f"{'🔔 Enabled' if new_state else '🔕 Disabled'}!", show_alert=True)
@@ -1015,7 +1008,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
 
 **Support:** @{SUPPORT_USERNAME}"""
         
-        kb = [[InlineKeyboardButton("📙", callback_data="settings")]]
+        kb = [[InlineKeyboardButton("🔙", callback_data="settings")]]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
     # HELP
@@ -1053,11 +1046,10 @@ Contact our support team:
         
         kb = [
             [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("📙 Back to Menu", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-    
-    # ==================== ADMIN PANEL ====================
+# ==================== ADMIN PANEL ====================
     elif d == "admin" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
@@ -1080,7 +1072,7 @@ Contact our support team:
             [InlineKeyboardButton("👥 User Mgmt", callback_data="user_mgmt")],
             [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
             [InlineKeyboardButton("📊 Stats", callback_data="stats"),
-             InlineKeyboardButton("📙", callback_data="menu")]
+             InlineKeyboardButton("🔙", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
     
@@ -1091,7 +1083,7 @@ Contact our support team:
             c.execute("""SELECT DISTINCT u.user_id, u.first_name, u.username, COUNT(g.id) as cnt
                          FROM gmail g JOIN users u ON g.user_id = u.user_id
                          WHERE g.status='pending'
-                         GROUP BY u.user_id ORDER BY cnt DESC LIMIT 10""")
+                         GROUP BY u.user_id, u.first_name, u.username ORDER BY cnt DESC LIMIT 10""")
             users_pending = c.fetchall()
         
         if users_pending:
@@ -1101,11 +1093,11 @@ Contact our support team:
                 uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
                 text += f"👤 {name} (@{username or 'N/A'}) - {cnt}\n"
                 kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}")])
-            kb.append([InlineKeyboardButton("📙", callback_data="admin")])
+            kb.append([InlineKeyboardButton("🔙", callback_data="admin")])
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         else:
             await q.edit_message_text("❌ No pending Gmail!",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📙", callback_data="admin")]]))
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
     
     # Individual Gmail Review
     elif d.startswith("user_gmail_"):
@@ -1114,11 +1106,11 @@ Contact our support team:
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT id, email, password, reward, submit_date, status
-                        FROM gmail WHERE user_id=? AND status='pending' 
+                        FROM gmail WHERE user_id=%s AND status='pending' 
                         ORDER BY submit_date""", (uid,))
             gmails = c.fetchall()
             
-            c.execute("SELECT first_name, username FROM users WHERE user_id=?", (uid,))
+            c.execute("SELECT first_name, username FROM users WHERE user_id=%s", (uid,))
             user_info = c.fetchone()
         
         if gmails and user_info:
@@ -1145,7 +1137,7 @@ Contact our support team:
             kb = [
                 [InlineKeyboardButton("✅ Approve All", callback_data=f"approve_all_{uid}"),
                  InlineKeyboardButton("❌ Reject All", callback_data=f"reject_all_{uid}")],
-                [InlineKeyboardButton("📙 Back", callback_data="gmail_queue")]
+                [InlineKeyboardButton("🔙 Back", callback_data="gmail_queue")]
             ]
             
             for gmail in gmails[:5]:
@@ -1168,7 +1160,7 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, reward, status, email FROM gmail WHERE id=?", (gid,))
+                c.execute("SELECT user_id, reward, status, email FROM gmail WHERE id=%s", (gid,))
                 result = c.fetchone()
                 
                 if not result:
@@ -1181,28 +1173,24 @@ Contact our support team:
                 
                 uid, reward, email = result['user_id'], result['reward'], result['email']
                 
-                # Check if this is user's first approved gmail
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=? AND status='approved'", (uid,))
+                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
                 first_approval = c.fetchone()[0] == 0
                 
-                # ATOMIC TRANSACTION
-                c.execute("UPDATE gmail SET status='approved', review_date=? WHERE id=?",
+                c.execute("UPDATE gmail SET status='approved', review_date=%s WHERE id=%s",
                          (datetime.now().isoformat(), gid))
-                c.execute("UPDATE users SET balance=balance+?, approved_gmail=approved_gmail+1 WHERE user_id=?",
+                c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+1 WHERE user_id=%s",
                          (reward, uid))
                 
-                # ✅ NEW: Award referral bonus if this is first approval
                 if first_approval:
-                    c.execute("SELECT referrer_id FROM users WHERE user_id=?", (uid,))
+                    c.execute("SELECT referrer_id FROM users WHERE user_id=%s", (uid,))
                     ref_result = c.fetchone()
                     if ref_result and ref_result['referrer_id']:
                         referrer_id = ref_result['referrer_id']
-                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=? AND referrer_id=?", 
+                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=%s AND referrer_id=%s", 
                                  (uid, referrer_id))
-                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=?", (referrer_id,))
+                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=%s", (referrer_id,))
                         
-                        # Get referred user name
-                        c.execute("SELECT first_name FROM users WHERE user_id=?", (uid,))
+                        c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
                         referred_name = c.fetchone()['first_name']
                         
                         await notify_user(context, referrer_id, 
@@ -1236,7 +1224,7 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, status, email FROM gmail WHERE id=?", (gid,))
+                c.execute("SELECT user_id, status, email FROM gmail WHERE id=%s", (gid,))
                 result = c.fetchone()
                 
                 if not result:
@@ -1249,7 +1237,7 @@ Contact our support team:
                 
                 uid, email = result['user_id'], result['email']
                 
-                c.execute("UPDATE gmail SET status='rejected', review_date=?, rejection_reason=? WHERE id=?",
+                c.execute("UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s WHERE id=%s",
                          (datetime.now().isoformat(), "Invalid/duplicate account", gid))
                 conn.commit()
                 
@@ -1269,14 +1257,15 @@ Contact our support team:
         except Exception as e:
             logger.error(f"Error rejecting gmail {gid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
-# APPROVE ALL
+
+    # APPROVE ALL
     elif d.startswith("approve_all_"):
         uid = int(d.split("_")[2])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=? AND status='pending'", (uid,))
+                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
                 gmails = c.fetchall()
                 
                 if not gmails:
@@ -1285,30 +1274,27 @@ Contact our support team:
                     await callback(update, context)
                     return
                 
-                # Check if this includes user's first approval
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=? AND status='approved'", (uid,))
+                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
                 is_first_approval = c.fetchone()[0] == 0
                 
                 total_reward = sum(row['reward'] for row in gmails)
                 count = len(gmails)
                 
-                c.execute("UPDATE gmail SET status='approved', review_date=? WHERE user_id=? AND status='pending'",
+                c.execute("UPDATE gmail SET status='approved', review_date=%s WHERE user_id=%s AND status='pending'",
                          (datetime.now().isoformat(), uid))
-                c.execute("UPDATE users SET balance=balance+?, approved_gmail=approved_gmail+? WHERE user_id=?",
+                c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+%s WHERE user_id=%s",
                          (total_reward, count, uid))
                 
-                # ✅ NEW: Award referral bonus if this includes first approval
                 if is_first_approval:
-                    c.execute("SELECT referrer_id FROM users WHERE user_id=?", (uid,))
+                    c.execute("SELECT referrer_id FROM users WHERE user_id=%s", (uid,))
                     ref_result = c.fetchone()
                     if ref_result and ref_result['referrer_id']:
                         referrer_id = ref_result['referrer_id']
-                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=? AND referrer_id=?", 
+                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=%s AND referrer_id=%s", 
                                  (uid, referrer_id))
-                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=?", (referrer_id,))
+                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=%s", (referrer_id,))
                         
-                        # Get referred user name
-                        c.execute("SELECT first_name FROM users WHERE user_id=?", (uid,))
+                        c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
                         referred_name = c.fetchone()['first_name']
                         
                         await notify_user(context, referrer_id, 
@@ -1340,7 +1326,7 @@ Contact our support team:
                     f"**Gmail Approved:** {count}\n"
                     f"**Total Amount:** ₹{total_reward}\n\n"
                     f"User has been notified.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📙 Back to Queue", callback_data="gmail_queue")]]),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
                     parse_mode='Markdown'
                 )
         except Exception as e:
@@ -1354,7 +1340,7 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=? AND status='pending'", (uid,))
+                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
                 count = c.fetchone()[0]
                 
                 if count == 0:
@@ -1363,7 +1349,7 @@ Contact our support team:
                     await callback(update, context)
                     return
                 
-                c.execute("UPDATE gmail SET status='rejected', review_date=?, rejection_reason=? WHERE user_id=? AND status='pending'",
+                c.execute("UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s WHERE user_id=%s AND status='pending'",
                          (datetime.now().isoformat(), "Quality issues", uid))
                 conn.commit()
                 
@@ -1384,14 +1370,14 @@ Contact our support team:
                     f"**Gmail Rejected:** {count}\n"
                     f"**Reason:** Quality issues\n\n"
                     f"User has been notified.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📙 Back to Queue", callback_data="gmail_queue")]]),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
                     parse_mode='Markdown'
                 )
         except Exception as e:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-    # WITHDRAWAL QUEUE
+# WITHDRAWAL QUEUE
     elif d == "withdrawal_queue" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
@@ -1420,12 +1406,12 @@ Contact our support team:
                 [InlineKeyboardButton("✅ Approve", callback_data=f"aw_{wid}"),
                  InlineKeyboardButton("❌ Reject", callback_data=f"rw_{wid}")],
                 [InlineKeyboardButton("➡️ Next", callback_data="withdrawal_queue"),
-                 InlineKeyboardButton("📙", callback_data="admin")]
+                 InlineKeyboardButton("🔙", callback_data="admin")]
             ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         else:
             await q.edit_message_text("❌ No pending withdrawals!",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📙", callback_data="admin")]]))
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
     
     # APPROVE WITHDRAWAL
     elif d.startswith("aw_"):
@@ -1434,7 +1420,7 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, amount, final_amount, status FROM withdrawals WHERE id=?", (wid,))
+                c.execute("SELECT user_id, amount, final_amount, status FROM withdrawals WHERE id=%s", (wid,))
                 result = c.fetchone()
                 
                 if not result:
@@ -1447,7 +1433,7 @@ Contact our support team:
                 
                 uid, amount, final_amount = result['user_id'], result['amount'], result['final_amount']
                 
-                c.execute("UPDATE withdrawals SET status='approved', processed_date=? WHERE id=?",
+                c.execute("UPDATE withdrawals SET status='approved', processed_date=%s WHERE id=%s",
                          (datetime.now().isoformat(), wid))
                 conn.commit()
                 
@@ -1476,7 +1462,7 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, amount, status FROM withdrawals WHERE id=?", (wid,))
+                c.execute("SELECT user_id, amount, status FROM withdrawals WHERE id=%s", (wid,))
                 result = c.fetchone()
                 
                 if not result:
@@ -1489,9 +1475,9 @@ Contact our support team:
                 
                 uid, amount = result['user_id'], result['amount']
                 
-                c.execute("UPDATE withdrawals SET status='rejected', processed_date=?, rejection_reason=? WHERE id=?",
+                c.execute("UPDATE withdrawals SET status='rejected', processed_date=%s, rejection_reason=%s WHERE id=%s",
                          (datetime.now().isoformat(), "Payment info invalid", wid))
-                c.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (amount, uid))
+                c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
                 conn.commit()
                 
                 log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount} refunded")
@@ -1557,7 +1543,7 @@ Contact our support team:
 💳 **Fees Collected:** ₹{fees_collected:.2f}"""
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📙", callback_data="admin")]
+            [InlineKeyboardButton("🔙", callback_data="admin")]
         ]), parse_mode='Markdown')
     
     # TOGGLE BLOCK
@@ -1567,8 +1553,8 @@ Contact our support team:
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("UPDATE users SET is_blocked = 1 - is_blocked WHERE user_id=?", (uid,))
-                c.execute("SELECT is_blocked FROM users WHERE user_id=?", (uid,))
+                c.execute("UPDATE users SET is_blocked = 1 - is_blocked WHERE user_id=%s", (uid,))
+                c.execute("SELECT is_blocked FROM users WHERE user_id=%s", (uid,))
                 blocked = c.fetchone()[0]
                 conn.commit()
             
@@ -1592,7 +1578,6 @@ Contact our support team:
 async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email = update.message.text.strip()
     
-    # Validate email with domain check
     is_valid, error_msg = validate_email(email)
     if not is_valid:
         await update.message.reply_text(
@@ -1604,7 +1589,6 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return EMAIL
     
-    # Check if email exists globally (anti-spam)
     duplicate = check_duplicate_email(email)
     if duplicate:
         duplicate_status = duplicate['status']
@@ -1653,16 +1637,16 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""INSERT INTO gmail (user_id, email, password, reward, submit_date)
-                         VALUES (?, ?, ?, ?, ?)""",
+                         VALUES (%s, %s, %s, %s, %s) RETURNING id""",
                       (uid, email, pwd, reward, datetime.now().isoformat()))
-            c.execute("UPDATE users SET total_gmail=total_gmail+1 WHERE user_id=?", (uid,))
-            gid = c.lastrowid
+            gid = c.fetchone()['id']
+            c.execute("UPDATE users SET total_gmail=total_gmail+1 WHERE user_id=%s", (uid,))
         
         update_submit_time(uid)
         
         context.user_data.clear()
         
-        kb = [[InlineKeyboardButton("📙 Menu", callback_data="menu")]]
+        kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
         await update.message.reply_text(
             f"✅ **Submitted Successfully!**\n\n"
             f"**ID:** #{gid}\n"
@@ -1689,7 +1673,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         return ConversationHandler.END
         
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         await update.message.reply_text(
             "❌ **Duplicate submission!**\n\n"
             "This email was already submitted.",
@@ -1720,9 +1704,9 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("UPDATE users SET upi_id=? WHERE user_id=?", (upi_id, update.effective_user.id))
+            c.execute("UPDATE users SET upi_id=%s WHERE user_id=%s", (upi_id, update.effective_user.id))
         
-        kb = [[InlineKeyboardButton("📙 Profile", callback_data="profile")]]
+        kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
         await update.message.reply_text(
             f"✅ **UPI ID saved!**\n\n"
             f"**UPI:** `{upi_id}`",
@@ -1754,9 +1738,9 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("UPDATE users SET usdt_address=? WHERE user_id=?", (addr, update.effective_user.id))
+            c.execute("UPDATE users SET usdt_address=%s WHERE user_id=%s", (addr, update.effective_user.id))
         
-        kb = [[InlineKeyboardButton("📙 Profile", callback_data="profile")]]
+        kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
         await update.message.reply_text(
             f"✅ **USDT address saved!**\n\n"
             f"**Address:** `{addr[:10]}...{addr[-10:]}`",
@@ -1772,6 +1756,7 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         return ConversationHandler.END
+    
 async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = float(update.message.text.strip())
@@ -1784,7 +1769,6 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return WITHDRAW_AMT
         
-        # Check daily limit again before processing
         can_withdraw, remaining = can_withdraw_today(update.effective_user.id)
         if not can_withdraw:
             await update.message.reply_text(
@@ -1797,14 +1781,13 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         
         method = context.user_data.get('withdraw_method')
         
-        # ✅ Calculate withdrawal fee
         fee, final_amount = calculate_withdrawal_fee(amount)
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
                 
-                c.execute("SELECT balance, usdt_address, upi_id FROM users WHERE user_id=?", 
+                c.execute("SELECT balance, usdt_address, upi_id FROM users WHERE user_id=%s", 
                          (update.effective_user.id,))
                 result = c.fetchone()
                 
@@ -1826,13 +1809,13 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 payment_info = result['upi_id'] if method == 'upi' else result['usdt_address']
                 method_name = "UPI" if method == 'upi' else "USDT TRC20"
                 
-                c.execute("UPDATE users SET balance=balance-? WHERE user_id=?", 
+                c.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", 
                          (amount, update.effective_user.id))
                 
                 c.execute("""INSERT INTO withdrawals (user_id, amount, fee, final_amount, method, payment_info, request_date)
-                             VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                             VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                          (update.effective_user.id, amount, fee, final_amount, method, payment_info, datetime.now().isoformat()))
-                wid = c.lastrowid
+                wid = c.fetchone()['id']
                 
                 conn.commit()
         except Exception as e:
@@ -1846,7 +1829,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         
         context.user_data.clear()
         
-        kb = [[InlineKeyboardButton("📙 Menu", callback_data="menu")]]
+        kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
         await update.message.reply_text(
             f"✅ **Withdrawal Requested!**\n\n"
             f"**ID:** #{wid}\n"
@@ -1910,7 +1893,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT username, first_name, balance, total_gmail, approved_gmail, 
-                         is_blocked, joined_date FROM users WHERE user_id=?""", (uid,))
+                         is_blocked, joined_date FROM users WHERE user_id=%s""", (uid,))
             result = c.fetchone()
         
         if result:
@@ -1934,7 +1917,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
             kb = [
                 [InlineKeyboardButton("🔴 Block" if not blocked else "🟢 Unblock", 
                                      callback_data=f"block_{uid}")],
-                [InlineKeyboardButton("📙", callback_data="admin")]
+                [InlineKeyboardButton("🔙", callback_data="admin")]
             ]
             
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), 
@@ -1972,7 +1955,7 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         log_audit("broadcast", ADMIN_ID, None, f"Sent: {sent}, Failed: {failed}")
         
-        kb = [[InlineKeyboardButton("📙 Admin", callback_data="admin")]]
+        kb = [[InlineKeyboardButton("🔙 Admin", callback_data="admin")]]
         await update.message.reply_text(
             f"📢 **Broadcast Complete!**\n\n"
             f"✅ Sent: {sent}\n"
@@ -1990,7 +1973,7 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    kb = [[InlineKeyboardButton("📙 Menu", callback_data="menu")]]
+    kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
     await update.message.reply_text("❌ Cancelled", reply_markup=InlineKeyboardMarkup(kb))
     return ConversationHandler.END
 
@@ -2111,7 +2094,7 @@ def main():
         print(f"💸 Max withdrawals/day: {MAX_WITHDRAWALS_PER_DAY}")
         print(f"💳 Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})")
         print(f"🎁 Referral reward: ₹5 (after 1st approval)")
-        print(f"⏱️  Submit cooldown: {SUBMIT_COOLDOWN}s")
+        print(f"⏱️ Submit cooldown: {SUBMIT_COOLDOWN}s")
         print("=" * 50)
         print("🚀 Bot is running! Press Ctrl+C to stop.")
         print("💡 Tip: Set bot menu button in @BotFather with /setmenubutton")
