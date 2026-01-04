@@ -2012,8 +2012,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Failed to send error notification: {e}")
 
 # ==================== MAIN ====================
-# ==================== MAIN ====================
-async def main():
+def main():
     print("🚀 Starting bot...")
     print("=" * 50)
 
@@ -2077,7 +2076,10 @@ async def main():
     app.add_error_handler(error_handler)
 
     print("🚀 Bot is running (polling)...")
-    await app.run_polling(close_loop=False)
-    
+
+    # ✅ THIS is the correct way
+    app.run_polling()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
