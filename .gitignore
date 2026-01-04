@@ -1,0 +1,4 @@
+database.db
+database_backup*.db
+.env
+__pycache__/
