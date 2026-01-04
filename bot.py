@@ -2018,7 +2018,7 @@ def main():
 
     # Conversation handlers
     gmail_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^submit$")],
         states={
             EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
@@ -2028,7 +2028,7 @@ def main():
     )
 
     withdraw_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^withdraw_(upi|usdt)$")],
         states={
             WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
@@ -2037,28 +2037,28 @@ def main():
     )
 
     usdt_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_usdt$")],
         states={USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     upi_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_upi$")],
         states={UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     user_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^user_mgmt$")],
         states={USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user_search)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     broadcast_conv = ConversationHandler(
-    per_message=True,
+    per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)]},
         fallbacks=[CommandHandler("cancel", cancel)],
