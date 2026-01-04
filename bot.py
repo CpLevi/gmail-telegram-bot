@@ -2076,14 +2076,8 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
     app.add_error_handler(error_handler)
 
-    print("🚀 Bot is running!")
-
-    await app.initialize()
-    await app.start()
-    await app.bot.initialize()
-
-    # Keep process alive
-    await asyncio.Event().wait()
-
+    print("🚀 Bot is running (polling)...")
+    await app.run_polling(close_loop=False)
+    
 if __name__ == "__main__":
     asyncio.run(main())
