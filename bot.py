@@ -2102,7 +2102,7 @@ def main():
         print("💡 Tip: Set bot menu button in @BotFather with /setmenubutton")
         print("=" * 50)
         
-        app.run_polling()
+        app.run_polling(stop_signals=None)
         
     except Exception as e:
         print(f"❌ Bot startup failed: {e}")
