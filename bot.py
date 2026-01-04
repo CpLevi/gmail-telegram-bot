@@ -29,6 +29,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+print("DEBUG ENV CHECK:")
+print("BOT_TOKEN:", bool(BOT_TOKEN))
+print("ADMIN_ID:", bool(ADMIN_ID_RAW))
+print("DATABASE_URL:", bool(DATABASE_URL))
+
 if not BOT_TOKEN or not ADMIN_ID_RAW or not DATABASE_URL:
     raise RuntimeError("Missing required environment variables")
 
