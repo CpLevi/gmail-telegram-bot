@@ -4,6 +4,7 @@
 import telegram
 print("PTB VERSION:", telegram.__version__)
 import os
+import asyncio
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import re
@@ -2010,6 +2011,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.error(f"Failed to send error notification: {e}")
 
 # ==================== MAIN ====================
+# ==================== MAIN ====================
 def main():
     print("🚀 Starting bot...")
     print("=" * 50)
@@ -2022,6 +2024,7 @@ def main():
         return
     
     try:
+        # Create application
         app = Application.builder().token(BOT_TOKEN).build()
         
         # Conversation handlers
@@ -2082,9 +2085,10 @@ def main():
         app.add_handler(upi_conv)
         app.add_handler(user_conv)
         app.add_handler(broadcast_conv)
-        app.add_handler(CallbackQueryHandler(callback), group=1)
+        app.add_handler(CallbackQueryHandler(callback))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
         
+        # Add error handler
         app.add_error_handler(error_handler)
         
         print("✅ All handlers registered successfully!")
@@ -2102,11 +2106,19 @@ def main():
         print("💡 Tip: Set bot menu button in @BotFather with /setmenubutton")
         print("=" * 50)
         
-        app.run_polling(stop_signals=None)
+        # Run the bot with polling
+        app.run_polling(
+            poll_interval=3,
+            timeout=10,
+            drop_pending_updates=True,
+            allowed_updates=Update.ALL_TYPES
+        )
         
     except Exception as e:
         print(f"❌ Bot startup failed: {e}")
         logger.error(f"Bot startup error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == '__main__':
     main()
