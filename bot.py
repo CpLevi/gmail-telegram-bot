@@ -29,11 +29,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-print("DEBUG ENV CHECK:")
-print("BOT_TOKEN:", bool(BOT_TOKEN))
-print("ADMIN_ID:", bool(ADMIN_ID_RAW))
-print("DATABASE_URL:", bool(DATABASE_URL))
-
 if not BOT_TOKEN or not ADMIN_ID_RAW or not DATABASE_URL:
     raise RuntimeError("Missing required environment variables")
 
@@ -2085,7 +2080,7 @@ def main():
         app.add_handler(upi_conv)
         app.add_handler(user_conv)
         app.add_handler(broadcast_conv)
-        app.add_handler(CallbackQueryHandler(callback))
+        app.add_handler(CallbackQueryHandler(callback), group=1)
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
         
         app.add_error_handler(error_handler)
