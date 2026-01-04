@@ -1,9 +1,12 @@
+# ==================== PART 1 ====================
 # SECURE TASK EARNING BOT - PRODUCTION READY v4.0 - PostgreSQL Compatible
-# Install: pip install python-telegram-bot==20.7 psycopg2-binary
+
 import telegram
 print("PTB VERSION:", telegram.__version__)
+
 import sys
 print("PYTHON VERSION:", sys.version)
+
 import os
 import asyncio
 import psycopg2
@@ -14,50 +17,37 @@ from datetime import datetime, timedelta
 from contextlib import contextmanager
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
+    Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 
-# ==================== LOGGING ====================
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ==================== CONFIGURATION ====================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# 🔒 SECURITY: Use environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not BOT_TOKEN or not ADMIN_ID_RAW or not DATABASE_URL:
-    raise RuntimeError("Missing required environment variables")
-
-ADMIN_ID = int(ADMIN_ID_RAW)
 
 TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL", "@EarnXOfficiial")
 SUPPORT_USERNAME = "Mr_Carry07"
 
-# Rate limits
-SUBMIT_COOLDOWN = 20
-MAX_PENDING_WITHDRAWALS = 3
-MAX_PAGINATION_PAGE = 100
-MAX_WITHDRAWALS_PER_DAY = 2
+# ==================== CONSTANTS ====================
+ALLOWED_DOMAINS = ["gmail.com"]
 
-# Withdrawal fees
-WITHDRAWAL_FEE_PERCENT = 2
+WITHDRAWAL_FEE_PERCENT = 5
 WITHDRAWAL_FEE_MIN = 5
 
-# Allowed email domains
-ALLOWED_DOMAINS = ['gmail.com', 'googlemail.com']
+MAX_WITHDRAWALS_PER_DAY = 3
+MAX_PENDING_WITHDRAWALS = 2
 
-# States
+SUBMIT_COOLDOWN = 20  # seconds
+MAX_PAGINATION_PAGE = 50
+
 EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH = range(7)
 
-# ==================== DATABASE CONTEXT MANAGER ====================
 @contextmanager
 def get_db():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -70,6 +60,11 @@ def get_db():
         raise
     finally:
         conn.close()
+
+# ==================== PART 2 ====================
+def fetch_single_value(cursor):
+    row = cursor.fetchone()
+    return list(row.values())[0] if row else 0
 
 # ==================== DATABASE INIT WITH INDEXES ====================
 def init_db():
@@ -292,7 +287,7 @@ def can_withdraw_today(user_id):
         c.execute("""SELECT COUNT(*) FROM withdrawals 
                     WHERE user_id=%s AND request_date::date=%s AND status IN ('pending', 'approved')""",
                  (user_id, today))
-        count = c.fetchone()[0]
+        count = list(c.fetchone().values())[0]
         return count < MAX_WITHDRAWALS_PER_DAY, MAX_WITHDRAWALS_PER_DAY - count
 
 def check_duplicate_email(email):
@@ -369,7 +364,7 @@ async def notify_user(context, user_id, message):
             logger.info(f"Notifications disabled for user {user_id}, skipping")
             return False
         
-        await context.bot.send_message(user_id, message, parse_mode='Markdown')
+        await context.bot.send_message(user_id, message, parse_mode=None)
         logger.info(f"✅ Notification sent successfully to user {user_id}")
         return True
         
@@ -397,13 +392,13 @@ def get_earnings_stats(user_id, period='all'):
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM gmail 
                     WHERE user_id=%s AND status='approved' AND review_date >= %s""",
                  (user_id, start_date))
-        gmail_earnings = c.fetchone()[0]
+        gmail_earnings = c.fetchone().values().__iter__().__next__()
         
         # Referral earnings
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM referrals 
                     WHERE referrer_id=%s AND rewarded=1 AND date >= %s""",
                  (user_id, start_date))
-        referral_earnings = c.fetchone()[0]
+        referral_earnings = c.fetchone().values().__iter__().__next__()
         
         # Channel bonus (one-time)
         if period == 'all':
@@ -509,7 +504,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.insert(0, [InlineKeyboardButton("📢 Join Channel", url=channel_url)])
         kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1", callback_data="claim_channel")])
     
-    await message_to_use.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    await message_to_use.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 
 # ==================== CALLBACK HANDLERS ====================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -572,7 +567,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⏳ **Cooldown Active**\n\n"
                 f"Please wait **{wait_time} seconds** before submitting another Gmail.\n\n"
                 f"This prevents spam and helps us process your submissions better.",
-                parse_mode='Markdown'
+                parse_mode=None
             )
             
             import asyncio
@@ -590,7 +585,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ Allowed: {', '.join(ALLOWED_DOMAINS)}\n"
             f"⚠️ Only YOUR OWN accounts!\n"
             "/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return EMAIL
     
@@ -604,7 +599,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             c.execute("SELECT SUM(reward) FROM gmail WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
-            pending = c.fetchone()[0] or 0
+            pending = c.fetchone().values().__iter__().__next__() or 0
         
         bal, total, approved = (result['balance'], result['total_gmail'], result['approved_gmail']) if result else (0,0,0)
         rate = calc_rate(q.from_user.id)
@@ -620,7 +615,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙", callback_data="menu")]
-        ]), parse_mode='Markdown')
+        ]), parse_mode=None)
     
     # EARNINGS DASHBOARD
     elif d == "earnings" or d.startswith("earnings_"):
@@ -653,20 +648,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # REFERRAL
     elif d == "referral":
         with get_db() as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (q.from_user.id,))
-            ref_count = c.fetchone()[0]
+            ref_count = list(c.fetchone().values())[0]
             
             c.execute("SELECT SUM(reward) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            total_earned = c.fetchone()[0] or 0
+            total_earned = c.fetchone().values().__iter__().__next__() or 0
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (q.from_user.id,))
-            pending_refs = c.fetchone()[0]
+            pending_refs = c.fetchone().values().__iter__().__next__()
         
         bot_user = context.bot.username
         ref_link = f"https://t.me/{bot_user}?start={q.from_user.id}"
@@ -693,7 +688,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
             [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # REFERRAL LEADERBOARD
     elif d == "referral_leaderboard":
@@ -722,7 +717,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             user_rank = result[0] if result else "N/A"
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            user_refs = c.fetchone()[0]
+            user_refs = c.fetchone().values().__iter__().__next__()
         
         text = "🏆 **Referral Leaderboard**\n\n"
         
@@ -742,7 +737,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb = [
             [InlineKeyboardButton("🔙 Back", callback_data="referral")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 # HISTORY - Gmail submissions
     elif d == "history" or d.startswith("history_gmail_"):
         page = validate_page(d.split("_")[-1]) if "_" in d else 0
@@ -756,7 +751,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             subs = c.fetchall()
             
             c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s", (q.from_user.id,))
-            total = c.fetchone()[0]
+            total = c.fetchone().values().__iter__().__next__()
         
         text = f"📋 **Gmail History** (Page {page+1})\n\n"
         if subs:
@@ -781,7 +776,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb.append([InlineKeyboardButton("💸 Withdrawal History", callback_data="history_withdrawal_0")])
         kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # WITHDRAWAL HISTORY
     elif d.startswith("history_withdrawal_"):
@@ -795,8 +790,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                         LIMIT 5 OFFSET %s""", (q.from_user.id, offset))
             withdrawals = c.fetchall()
             
-            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s", (q.from_user.id,))
-            total = c.fetchone()[0]
+            row = c.fetchone()
+            pending = row[list(row.keys())[0]]
         
         text = f"💸 **Withdrawal History** (Page {page+1})\n\n"
         if withdrawals:
@@ -828,7 +823,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb.append([InlineKeyboardButton("📧 Gmail History", callback_data="history_gmail_0")])
         kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 
     # WITHDRAW
     elif d == "withdraw":
@@ -840,7 +835,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             
             c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
-            pending_count = c.fetchone()[0]
+            pending_count = list(c.fetchone().values())[0]
         
         can_withdraw, remaining = can_withdraw_today(q.from_user.id)
         
@@ -865,7 +860,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                     [InlineKeyboardButton("⚙️ Setup", callback_data="setup_payment")],
                     [InlineKeyboardButton("🔙", callback_data="menu")]
                 ]
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.edit_message_text("❌ Error!", 
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="menu")]]))
@@ -884,7 +879,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         context.user_data['withdraw_method'] = 'upi'
         await q.edit_message_text(
             "💸 **Withdraw via UPI**\n\nEnter amount (Min: ₹100):\n\n/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return WITHDRAW_AMT
     
@@ -902,7 +897,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         context.user_data['withdraw_method'] = 'usdt'
         await q.edit_message_text(
             "💸 **Withdraw via USDT**\n\nEnter amount (Min: ₹100):\n\n/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return WITHDRAW_AMT
     
@@ -914,16 +909,16 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             [InlineKeyboardButton("🔙", callback_data="withdraw")]
         ]
         await q.edit_message_text("⚙️ **Setup Payment**\n\nChoose:", 
-                                  reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+                                  reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     elif d == "set_upi":
         await q.edit_message_text("📱 **Setup UPI**\n\nSend UPI ID:\n/cancel to abort", 
-                                  parse_mode='Markdown')
+                                  parse_mode=None)
         return UPI_ID
     
     elif d == "set_usdt":
         await q.edit_message_text("💎 **Setup USDT**\n\nSend TRC20 address:\n/cancel to abort", 
-                                  parse_mode='Markdown')
+                                  parse_mode=None)
         return USDT_ADDRESS
     
     # PROFILE
@@ -935,7 +930,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             result = c.fetchone()
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            ref_count = c.fetchone()[0]
+            ref_count = list(c.fetchone().values())[0]
         
         if result:
             bal, approved, usdt, upi, joined = result['balance'], result['approved_gmail'], result['usdt_address'], result['upi_id'], result['joined_date']
@@ -958,7 +953,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 [InlineKeyboardButton("⚙️ Payment", callback_data="setup_payment")],
                 [InlineKeyboardButton("🔙", callback_data="menu")]
             ]
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # SETTINGS
     elif d == "settings":
@@ -981,7 +976,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             [InlineKeyboardButton("📞 Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
             [InlineKeyboardButton("🔙", callback_data="menu")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # TOGGLE NOTIFICATIONS
     elif d == "toggle_notif":
@@ -990,7 +985,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             c.execute("UPDATE users SET notifications_enabled = 1 - notifications_enabled WHERE user_id=%s", 
                      (q.from_user.id,))
             c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (q.from_user.id,))
-            new_state = c.fetchone()[0]
+            new_state = c.fetchone().values().__iter__().__next__()
         
         await q.answer(f"{'🔔 Enabled' if new_state else '🔕 Disabled'}!", show_alert=True)
         q.data = "settings"
@@ -1013,7 +1008,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
 **Support:** @{SUPPORT_USERNAME}"""
         
         kb = [[InlineKeyboardButton("🔙", callback_data="settings")]]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # HELP
     elif d == "help":
@@ -1052,17 +1047,17 @@ Contact our support team:
             [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 # ==================== ADMIN PANEL ====================
     elif d == "admin" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM users")
-            users = c.fetchone()[0]
+            users = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT COUNT(*) FROM gmail WHERE status='pending'")
-            pg = c.fetchone()[0]
+            pg = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
-            pw = c.fetchone()[0]
+            pw = c.fetchone().values().__iter__().__next__()
         
         text = f"""⚙️ **ADMIN**
 
@@ -1078,7 +1073,7 @@ Contact our support team:
             [InlineKeyboardButton("📊 Stats", callback_data="stats"),
              InlineKeyboardButton("🔙", callback_data="menu")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # GMAIL QUEUE
     elif d == "gmail_queue" and q.from_user.id == ADMIN_ID:
@@ -1098,7 +1093,7 @@ Contact our support team:
                 text += f"👤 {name} (@{username or 'N/A'}) - {cnt}\n"
                 kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}")])
             kb.append([InlineKeyboardButton("🔙", callback_data="admin")])
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.edit_message_text("❌ No pending Gmail!",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
@@ -1151,7 +1146,7 @@ Contact our support team:
                     InlineKeyboardButton(f"❌ Reject #{gid}", callback_data=f"reject_{gid}")
                 ])
             
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.answer("❌ No pending Gmail!", show_alert=True)
             q.data = "gmail_queue"
@@ -1178,7 +1173,7 @@ Contact our support team:
                 uid, reward, email = result['user_id'], result['reward'], result['email']
                 
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
-                first_approval = c.fetchone()[0] == 0
+                first_approval = c.fetchone().values().__iter__().__next__() == 0
                 
                 c.execute("UPDATE gmail SET status='approved', review_date=%s WHERE id=%s",
                          (datetime.now().isoformat(), gid))
@@ -1279,7 +1274,7 @@ Contact our support team:
                     return
                 
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
-                is_first_approval = c.fetchone()[0] == 0
+                is_first_approval = c.fetchone().values().__iter__().__next__() == 0
                 
                 total_reward = sum(row['reward'] for row in gmails)
                 count = len(gmails)
@@ -1331,7 +1326,7 @@ Contact our support team:
                     f"**Total Amount:** ₹{total_reward}\n\n"
                     f"User has been notified.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
-                    parse_mode='Markdown'
+                    parse_mode=None
                 )
         except Exception as e:
             logger.error(f"Error approving all gmails for user {uid}: {e}")
@@ -1345,7 +1340,7 @@ Contact our support team:
             with get_db() as conn:
                 c = conn.cursor()
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
-                count = c.fetchone()[0]
+                count = list(c.fetchone().values())[0]
                 
                 if count == 0:
                     await q.answer("❌ No pending Gmail found!", show_alert=True)
@@ -1375,7 +1370,7 @@ Contact our support team:
                     f"**Reason:** Quality issues\n\n"
                     f"User has been notified.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
-                    parse_mode='Markdown'
+                    parse_mode=None
                 )
         except Exception as e:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
@@ -1412,7 +1407,7 @@ Contact our support team:
                 [InlineKeyboardButton("➡️ Next", callback_data="withdrawal_queue"),
                  InlineKeyboardButton("🔙", callback_data="admin")]
             ]
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.edit_message_text("❌ No pending withdrawals!",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
@@ -1504,12 +1499,12 @@ Contact our support team:
     
     # USER MANAGEMENT
     elif d == "user_mgmt" and q.from_user.id == ADMIN_ID:
-        await q.edit_message_text("👥 **User Management**\n\nSend user ID:\n\n/cancel to abort", parse_mode='Markdown')
+        await q.edit_message_text("👥 **User Management**\n\nSend user ID:\n\n/cancel to abort", parse_mode=None)
         return USER_SEARCH
     
     # BROADCAST
     elif d == "broadcast" and q.from_user.id == ADMIN_ID:
-        await q.edit_message_text("📢 **Broadcast**\n\nSend message:\n\n/cancel to abort", parse_mode='Markdown')
+        await q.edit_message_text("📢 **Broadcast**\n\nSend message:\n\n/cancel to abort", parse_mode=None)
         return BROADCAST_MSG
     
     # STATS
@@ -1517,21 +1512,21 @@ Contact our support team:
         with get_db() as conn:
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM users")
-            total_users = c.fetchone()[0]
+            total_users = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT COUNT(*) FROM gmail WHERE status='approved'")
-            approved = c.fetchone()[0]
+            approved = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT SUM(balance) FROM users")
-            total_bal = c.fetchone()[0] or 0
+            total_bal = c.fetchone().values().__iter__().__next__() or 0
             c.execute("SELECT SUM(reward) FROM gmail WHERE status='approved'")
-            paid = c.fetchone()[0] or 0
+            paid = c.fetchone().values().__iter__().__next__() or 0
             c.execute("SELECT COUNT(*) FROM referrals WHERE rewarded=1")
-            refs = c.fetchone()[0]
+            refs = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT SUM(reward) FROM referrals WHERE rewarded=1")
-            ref_paid = c.fetchone()[0] or 0
+            ref_paid = c.fetchone().values().__iter__().__next__() or 0
             c.execute("SELECT SUM(final_amount) FROM withdrawals WHERE status='approved'")
-            withdrawn = c.fetchone()[0] or 0
+            withdrawn = c.fetchone().values().__iter__().__next__() or 0
             c.execute("SELECT SUM(fee) FROM withdrawals WHERE status='approved'")
-            fees_collected = c.fetchone()[0] or 0
+            fees_collected = c.fetchone().values().__iter__().__next__() or 0
         
         text = f"""📊 **Statistics**
 
@@ -1548,7 +1543,7 @@ Contact our support team:
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙", callback_data="admin")]
-        ]), parse_mode='Markdown')
+        ]), parse_mode=None)
     
     # TOGGLE BLOCK
     elif d.startswith("block_"):
@@ -1559,7 +1554,7 @@ Contact our support team:
                 c = conn.cursor()
                 c.execute("UPDATE users SET is_blocked = 1 - is_blocked WHERE user_id=%s", (uid,))
                 c.execute("SELECT is_blocked FROM users WHERE user_id=%s", (uid,))
-                blocked = c.fetchone()[0]
+                blocked = c.fetchone().values().__iter__().__next__()
                 conn.commit()
             
             log_audit("block_user" if blocked else "unblock_user", ADMIN_ID, uid, "")
@@ -1589,7 +1584,7 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Allowed domains: {', '.join(ALLOWED_DOMAINS)}\n"
             f"Please send a valid email address.\n"
             "/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return EMAIL
     
@@ -1608,7 +1603,7 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{msg}\n"
             f"Status: {duplicate_status.title()}\n\n"
             f"/cancel to abort or send a different email",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return EMAIL
     
@@ -1617,7 +1612,7 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "✅ **Email received!**\n\n"
         "Now send the password:\n"
         "(6-100 characters)",
-        parse_mode='Markdown'
+        parse_mode=None
     )
     return PASSWORD
 
@@ -1629,7 +1624,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ **Invalid password!**\n\n"
             "Password must be 6-100 characters.\n"
             "/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return PASSWORD
     
@@ -1658,7 +1653,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"**Reward:** ₹{reward}\n\n"
             f"⏳ Under review (24-48h)",
             reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            parse_mode=None
         )
         
         try:
@@ -1670,7 +1665,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📧 `{email}`\n"
                 f"🔑 `{pwd}`\n"
                 f"💰 ₹{reward}",
-                parse_mode='Markdown'
+                parse_mode=None
             )
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
@@ -1681,7 +1676,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ **Duplicate submission!**\n\n"
             "This email was already submitted.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
     except Exception as e:
@@ -1689,7 +1684,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ **Error occurred!**\n\n"
             "Please try again later.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
 
@@ -1701,7 +1696,7 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ **Invalid UPI ID!**\n\n"
             "Format: name@bank\n"
             "/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return UPI_ID
     
@@ -1715,7 +1710,7 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ **UPI ID saved!**\n\n"
             f"**UPI:** `{upi_id}`",
             reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
     except Exception as e:
@@ -1723,7 +1718,7 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ **Error occurred!**\n\n"
             "Please try again later.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
 
@@ -1735,7 +1730,7 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ **Invalid USDT address!**\n\n"
             "Must be 34 characters, starting with 'T'\n"
             "/cancel to abort",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return USDT_ADDRESS
     
@@ -1749,7 +1744,7 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ **USDT address saved!**\n\n"
             f"**Address:** `{addr[:10]}...{addr[-10:]}`",
             reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
     except Exception as e:
@@ -1757,7 +1752,7 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "❌ **Error occurred!**\n\n"
             "Please try again later.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
     
@@ -1769,7 +1764,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(
                 "❌ **Minimum withdrawal: ₹100**\n\n"
                 "Enter valid amount or /cancel",
-                parse_mode='Markdown'
+                parse_mode=None
             )
             return WITHDRAW_AMT
         
@@ -1779,7 +1774,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"❌ **Daily limit reached!**\n\n"
                 f"You can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day.\n"
                 f"Try again tomorrow.",
-                parse_mode='Markdown'
+                parse_mode=None
             )
             return ConversationHandler.END
         
@@ -1806,7 +1801,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                         f"❌ **Insufficient balance!**\n\n"
                         f"**Balance:** ₹{balance:.2f}\n"
                         f"**Requested:** ₹{amount}",
-                        parse_mode='Markdown'
+                        parse_mode=None
                     )
                     return WITHDRAW_AMT
                 
@@ -1827,7 +1822,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(
                 "❌ **Error occurred!**\n\n"
                 "Please try again later.",
-                parse_mode='Markdown'
+                parse_mode=None
             )
             return ConversationHandler.END
         
@@ -1843,7 +1838,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             f"**Method:** {method_name}\n\n"
             f"⏳ Processing within 24-48h",
             reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            parse_mode=None
         )
         
         try:
@@ -1857,7 +1852,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"💵 **Final:** ₹{final_amount:.2f}\n"
                 f"💳 **Method:** {method_name}\n"
                 f"📄 **Info:** `{payment_info}`",
-                parse_mode='Markdown'
+                parse_mode=None
             )
         except Exception as e:
             logger.error(f"Failed to notify admin: {e}")
@@ -1868,7 +1863,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             "❌ **Invalid amount!**\n\n"
             "Enter a valid number or /cancel",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return WITHDRAW_AMT
     except Exception as e:
@@ -1876,7 +1871,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             "❌ **Error occurred!**\n\n"
             "Please try again later.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return ConversationHandler.END
 
@@ -1887,7 +1882,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(
             "❌ **Invalid user ID format!**\n\n"
             "Please enter a valid numeric user ID.",
-            parse_mode='Markdown'
+            parse_mode=None
         )
         return USER_SEARCH
     
@@ -1925,7 +1920,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]
             
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), 
-                                           parse_mode='Markdown')
+                                           parse_mode=None)
         else:
             await update.message.reply_text("❌ User not found")
         
@@ -1951,7 +1946,7 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         failed = 0
         for row in users:
             try:
-                await context.bot.send_message(row['user_id'], f"📢 **Announcement**\n\n{msg}", parse_mode='Markdown')
+                await context.bot.send_message(row['user_id'], f"📢 **Announcement**\n\n{msg}", parse_mode=None)
                 sent += 1
             except Exception as e:
                 failed += 1
@@ -1966,7 +1961,7 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"❌ Failed: {failed}\n"
             f"📊 Total: {len(users)} users",
             reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+            parse_mode=None
         )
         
         return ConversationHandler.END
@@ -2007,7 +2002,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
                        f"**User ID:** `{user_id}`\n" \
                        f"**Error:** `{str(context.error)[:200]}`"
             
-            await context.bot.send_message(ADMIN_ID, error_msg, parse_mode='Markdown')
+            await context.bot.send_message(ADMIN_ID, error_msg, parse_mode=None)
     except Exception as e:
         logger.error(f"Failed to send error notification: {e}")
 
@@ -2023,6 +2018,7 @@ def main():
 
     # Conversation handlers
     gmail_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^submit$")],
         states={
             EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
@@ -2032,6 +2028,7 @@ def main():
     )
 
     withdraw_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^withdraw_(upi|usdt)$")],
         states={
             WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
@@ -2040,24 +2037,28 @@ def main():
     )
 
     usdt_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_usdt$")],
         states={USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     upi_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_upi$")],
         states={UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     user_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^user_mgmt$")],
         states={USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user_search)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     broadcast_conv = ConversationHandler(
+    per_message=True,
         entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)]},
         fallbacks=[CommandHandler("cancel", cancel)],
