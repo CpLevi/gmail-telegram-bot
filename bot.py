@@ -2012,113 +2012,77 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ==================== MAIN ====================
 # ==================== MAIN ====================
-def main():
+async def main():
     print("🚀 Starting bot...")
     print("=" * 50)
-    
-    try:
-        init_db()
-        print("✅ Database initialized successfully!")
-    except Exception as e:
-        print(f"❌ Database initialization failed: {e}")
-        return
-    
-    try:
-        # Create application
-        app = Application.builder().token(BOT_TOKEN).build()
-        
-        # Conversation handlers
-        gmail_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^submit$")],
-            states={
-                EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
-                PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        withdraw_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^withdraw_(upi|usdt)$")],
-            states={
-                WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        usdt_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^set_usdt$")],
-            states={
-                USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        upi_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^set_upi$")],
-            states={
-                UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        user_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^user_mgmt$")],
-            states={
-                USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user_search)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        broadcast_conv = ConversationHandler(
-            entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
-            states={
-                BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)],
-            },
-            fallbacks=[CommandHandler("cancel", cancel)],
-        )
-        
-        # Add handlers in correct order
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(gmail_conv)
-        app.add_handler(withdraw_conv)
-        app.add_handler(usdt_conv)
-        app.add_handler(upi_conv)
-        app.add_handler(user_conv)
-        app.add_handler(broadcast_conv)
-        app.add_handler(CallbackQueryHandler(callback))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
-        
-        # Add error handler
-        app.add_error_handler(error_handler)
-        
-        print("✅ All handlers registered successfully!")
-        print("=" * 50)
-        print("🎉 BOT CONFIGURATION:")
-        print(f"📢 Channel: {TELEGRAM_CHANNEL}")
-        print(f"👤 Admin ID: {ADMIN_ID}")
-        print(f"📧 Allowed domains: {', '.join(ALLOWED_DOMAINS)}")
-        print(f"💸 Max withdrawals/day: {MAX_WITHDRAWALS_PER_DAY}")
-        print(f"💳 Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})")
-        print(f"🎁 Referral reward: ₹5 (after 1st approval)")
-        print(f"⏱️ Submit cooldown: {SUBMIT_COOLDOWN}s")
-        print("=" * 50)
-        print("🚀 Bot is running! Press Ctrl+C to stop.")
-        print("💡 Tip: Set bot menu button in @BotFather with /setmenubutton")
-        print("=" * 50)
-        
-        # Run the bot with polling
-        app.run_polling(
-            poll_interval=3,
-            timeout=10,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
-        
-    except Exception as e:
-        print(f"❌ Bot startup failed: {e}")
-        logger.error(f"Bot startup error: {e}")
-        import traceback
-        traceback.print_exc()
 
-if __name__ == '__main__':
-    main()
+    init_db()
+    print("✅ Database initialized successfully!")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Conversation handlers
+    gmail_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^submit$")],
+        states={
+            EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
+            PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    withdraw_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^withdraw_(upi|usdt)$")],
+        states={
+            WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    usdt_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^set_usdt$")],
+        states={USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    upi_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^set_upi$")],
+        states={UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    user_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^user_mgmt$")],
+        states={USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user_search)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    broadcast_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
+        states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # Register handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(gmail_conv)
+    app.add_handler(withdraw_conv)
+    app.add_handler(usdt_conv)
+    app.add_handler(upi_conv)
+    app.add_handler(user_conv)
+    app.add_handler(broadcast_conv)
+    app.add_handler(CallbackQueryHandler(callback), group=1)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+    app.add_error_handler(error_handler)
+
+    print("🚀 Bot is running!")
+
+    await app.initialize()
+    await app.start()
+    await app.bot.initialize()
+
+    # Keep process alive
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())
