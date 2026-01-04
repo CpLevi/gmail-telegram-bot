@@ -26,7 +26,12 @@ DB_PATH = os.path.join(BASE_DIR, "database.db")
 
 # 🔒 SECURITY: Use environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+
+if not BOT_TOKEN or not ADMIN_ID_RAW:
+    raise RuntimeError("BOT_TOKEN or ADMIN_ID is not set in environment variables")
+
+ADMIN_ID = int(ADMIN_ID_RAW)
 
 TELEGRAM_CHANNEL = os.getenv("TELEGRAM_CHANNEL", "@EarnXOfficiial")
 SUPPORT_USERNAME = "Mr_Carry07"
