@@ -3,6 +3,8 @@
 #Hi
 import telegram
 print("PTB VERSION:", telegram.__version__)
+import sys
+print("PYTHON VERSION:", sys.version)
 import os
 import asyncio
 import psycopg2
