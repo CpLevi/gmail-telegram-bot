@@ -1,5 +1,5 @@
-# ==================== PART 1 ====================
-# SECURE TASK EARNING BOT - PRODUCTION READY v4.0 - PostgreSQL Compatible
+# ==================== PART 1: IMPORTS AND DATABASE SETUP ====================
+# SECURE TASK EARNING BOT - PRODUCTION READY v5.0 - PostgreSQL Compatible
 
 import telegram
 print("PTB VERSION:", telegram.__version__)
@@ -15,6 +15,7 @@ import re
 import logging
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+from decimal import Decimal, ROUND_HALF_UP
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -37,8 +38,8 @@ SUPPORT_USERNAME = "Mr_Carry07"
 # ==================== CONSTANTS ====================
 ALLOWED_DOMAINS = ["gmail.com"]
 
-WITHDRAWAL_FEE_PERCENT = 5
-WITHDRAWAL_FEE_MIN = 5
+WITHDRAWAL_FEE_PERCENT = Decimal("5")
+WITHDRAWAL_FEE_MIN = Decimal("5")
 
 MAX_WITHDRAWALS_PER_DAY = 3
 MAX_PENDING_WITHDRAWALS = 2
@@ -61,12 +62,6 @@ def get_db():
     finally:
         conn.close()
 
-# ==================== PART 2 ====================
-def fetch_single_value(cursor):
-    row = cursor.fetchone()
-    return list(row.values())[0] if row else 0
-
-# ==================== DATABASE INIT WITH INDEXES ====================
 def init_db():
     with get_db() as conn:
         c = conn.cursor()
@@ -76,7 +71,7 @@ def init_db():
             user_id BIGINT PRIMARY KEY,
             username TEXT,
             first_name TEXT,
-            balance REAL DEFAULT 0,
+            balance DECIMAL(10,2) DEFAULT 0,
             total_gmail INTEGER DEFAULT 0,
             approved_gmail INTEGER DEFAULT 0,
             is_blocked INTEGER DEFAULT 0,
@@ -87,8 +82,7 @@ def init_db():
             channel_claimed INTEGER DEFAULT 0,
             last_submit_time TEXT,
             terms_accepted INTEGER DEFAULT 1,
-            notifications_enabled INTEGER DEFAULT 1,
-            referral_rewarded INTEGER DEFAULT 0
+            notifications_enabled INTEGER DEFAULT 1
         )''')
         
         # Gmail submissions table
@@ -98,7 +92,7 @@ def init_db():
             email TEXT,
             password TEXT,
             status TEXT DEFAULT 'pending',
-            reward REAL,
+            reward DECIMAL(10,2),
             submit_date TEXT,
             review_date TEXT,
             rejection_reason TEXT,
@@ -109,9 +103,9 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS withdrawals (
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
-            amount REAL,
-            fee REAL DEFAULT 0,
-            final_amount REAL,
+            amount DECIMAL(10,2),
+            fee DECIMAL(10,2) DEFAULT 0,
+            final_amount DECIMAL(10,2),
             method TEXT,
             payment_info TEXT,
             status TEXT DEFAULT 'pending',
@@ -120,12 +114,12 @@ def init_db():
             rejection_reason TEXT
         )''')
         
-        # Referrals table
+        # Referrals table - IDEMPOTENT
         c.execute('''CREATE TABLE IF NOT EXISTS referrals (
             id SERIAL PRIMARY KEY,
             referrer_id BIGINT,
             referred_id BIGINT,
-            reward REAL DEFAULT 5,
+            reward DECIMAL(10,2) DEFAULT 5,
             date TEXT,
             rewarded INTEGER DEFAULT 0,
             UNIQUE(referred_id)
@@ -141,17 +135,16 @@ def init_db():
             timestamp TEXT
         )''')
         
-        # Add missing columns with error handling
+        # Add missing columns
         columns_to_add = [
             ("users", "notifications_enabled", "INTEGER DEFAULT 1"),
             ("users", "last_submit_time", "TEXT"),
-            ("users", "referral_rewarded", "INTEGER DEFAULT 0"),
             ("gmail", "review_date", "TEXT"),
             ("gmail", "rejection_reason", "TEXT"),
             ("withdrawals", "processed_date", "TEXT"),
             ("withdrawals", "rejection_reason", "TEXT"),
-            ("withdrawals", "fee", "REAL DEFAULT 0"),
-            ("withdrawals", "final_amount", "REAL"),
+            ("withdrawals", "fee", "DECIMAL(10,2) DEFAULT 0"),
+            ("withdrawals", "final_amount", "DECIMAL(10,2)"),
             ("referrals", "rewarded", "INTEGER DEFAULT 0")
         ]
         
@@ -163,13 +156,6 @@ def init_db():
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
                 conn.commit()
         
-        # Update existing referrals to new reward amount
-        try:
-            c.execute("UPDATE referrals SET reward = 5 WHERE reward != 5")
-            conn.commit()
-        except Exception as e:
-            logger.error(f"Error updating referral rewards: {e}")
-        
         # Create indexes for performance
         indexes = [
             ("idx_gmail_user_status", "gmail", "user_id, status"),
@@ -179,6 +165,7 @@ def init_db():
             ("idx_withdrawals_status", "withdrawals", "status"),
             ("idx_withdrawals_date", "withdrawals", "request_date"),
             ("idx_referrals_referrer", "referrals", "referrer_id"),
+            ("idx_referrals_rewarded", "referrals", "rewarded"),
             ("idx_users_blocked", "users", "is_blocked")
         ]
         
@@ -189,12 +176,32 @@ def init_db():
                 logger.error(f"Error creating index {idx_name}: {e}")
         
         conn.commit()
+        logger.info("✅ Database initialized successfully")
+# ==================== PART 2: VALIDATION AND HELPER FUNCTIONS ====================
 
-# ==================== VALIDATION ====================
+def round_decimal(value):
+    """Round to 2 decimal places properly"""
+    return Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+def normalize_email(email):
+    """Normalize email for duplicate detection"""
+    if not email:
+        return email
+    email = email.lower().strip()
+    local, domain = email.split('@', 1)
+    # Remove dots and plus aliases from Gmail local part
+    if domain == 'gmail.com':
+        local = local.replace('.', '')
+        if '+' in local:
+            local = local.split('+')[0]
+    return f"{local}@{domain}"
+
 def validate_email(email):
     """Validate email and check domain"""
     if not email or len(email) > 100:
         return False, "Email too long"
+    
+    email = email.lower().strip()
     
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     if not re.match(pattern, email):
@@ -204,7 +211,7 @@ def validate_email(email):
     if domain not in ALLOWED_DOMAINS:
         return False, f"Only {', '.join(ALLOWED_DOMAINS)} allowed"
     
-    return True, "Valid"
+    return True, email
 
 def validate_password(password):
     return password and 6 <= len(password) <= 100
@@ -221,7 +228,7 @@ def validate_usdt_address(address):
     return address.startswith('T')
 
 def mask_email(email):
-    """Mask email for privacy: example@gmail.com -> ex****@gmail.com"""
+    """Mask email for privacy"""
     if not email or '@' not in email:
         return email
     
@@ -245,20 +252,21 @@ def validate_page(page_str):
         return 0
 
 def calculate_withdrawal_fee(amount):
-    """Calculate withdrawal fee"""
-    fee = max(amount * (WITHDRAWAL_FEE_PERCENT / 100), WITHDRAWAL_FEE_MIN)
-    final_amount = amount - fee
+    """Calculate withdrawal fee with proper decimal precision"""
+    amount = round_decimal(amount)
+    fee_percent = amount * (WITHDRAWAL_FEE_PERCENT / Decimal("100"))
+    fee = max(fee_percent, WITHDRAWAL_FEE_MIN)
+    fee = round_decimal(fee)
+    final_amount = round_decimal(amount - fee)
     return fee, final_amount
 
-# ==================== RATE LIMITING ====================
 def can_submit_gmail(user_id):
+    """Check cooldown for Gmail submission"""
     with get_db() as conn:
         c = conn.cursor()
         try:
             c.execute("SELECT last_submit_time FROM users WHERE user_id=%s", (user_id,))
         except psycopg2.Error:
-            c.execute("ALTER TABLE users ADD COLUMN last_submit_time TEXT")
-            conn.commit()
             return True, 0
         
         result = c.fetchone()
@@ -274,6 +282,7 @@ def can_submit_gmail(user_id):
         return True, 0
 
 def update_submit_time(user_id):
+    """Update last submit time"""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("UPDATE users SET last_submit_time=%s WHERE user_id=%s", 
@@ -291,10 +300,11 @@ def can_withdraw_today(user_id):
         return count < MAX_WITHDRAWALS_PER_DAY, MAX_WITHDRAWALS_PER_DAY - count
 
 def check_duplicate_email(email):
-    """Check if email exists across all users"""
+    """Check if email exists (normalized)"""
+    normalized = normalize_email(email)
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id, status FROM gmail WHERE email=%s LIMIT 1", (email,))
+        c.execute("SELECT user_id, status FROM gmail WHERE LOWER(TRIM(email))=%s LIMIT 1", (normalized,))
         result = c.fetchone()
         return result
 
@@ -309,8 +319,8 @@ def log_audit(action, admin_id, target_user_id=None, details=""):
     except Exception as e:
         logger.error(f"Audit log error: {e}")
 
-# ==================== HELPERS ====================
 async def check_channel(user_id, context):
+    """Check channel membership with error handling"""
     try:
         channel = TELEGRAM_CHANNEL.lstrip('@')
         if not channel.startswith('@'):
@@ -323,6 +333,7 @@ async def check_channel(user_id, context):
         return False
 
 def calc_rate(user_id):
+    """Calculate reward rate based on approved Gmail"""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT approved_gmail FROM users WHERE user_id=%s", (user_id,))
@@ -330,12 +341,13 @@ def calc_rate(user_id):
         approved = result['approved_gmail'] if result else 0
         
     if approved >= 100:
-        return 30
+        return Decimal("30")
     elif approved >= 50:
-        return 25
-    return 20
+        return Decimal("25")
+    return Decimal("20")
 
 def is_blocked(user_id):
+    """Check if user is blocked"""
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT is_blocked FROM users WHERE user_id=%s", (user_id,))
@@ -350,22 +362,19 @@ def notifications_enabled(user_id):
             c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (user_id,))
             result = c.fetchone()
             return result['notifications_enabled'] == 1 if result else True
-    except psycopg2.Error as e:
-        logger.error(f"notifications_enabled error for user {user_id}: {e}")
-        return True
     except Exception as e:
-        logger.error(f"Unexpected error checking notifications for user {user_id}: {e}")
+        logger.error(f"notifications_enabled error: {e}")
         return True
 
 async def notify_user(context, user_id, message):
     """Send notification to user with error handling"""
     try:
         if not notifications_enabled(user_id):
-            logger.info(f"Notifications disabled for user {user_id}, skipping")
+            logger.info(f"Notifications disabled for user {user_id}")
             return False
         
         await context.bot.send_message(user_id, message, parse_mode=None)
-        logger.info(f"✅ Notification sent successfully to user {user_id}")
+        logger.info(f"✅ Notification sent to user {user_id}")
         return True
         
     except Exception as e:
@@ -388,19 +397,16 @@ def get_earnings_stats(user_id, period='all'):
         else:
             start_date = '2000-01-01'
         
-        # Gmail earnings
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM gmail 
                     WHERE user_id=%s AND status='approved' AND review_date >= %s""",
                  (user_id, start_date))
-        gmail_earnings = c.fetchone().values().__iter__().__next__()
+        gmail_earnings = float(c.fetchone().values().__iter__().__next__())
         
-        # Referral earnings
         c.execute("""SELECT COALESCE(SUM(reward), 0) FROM referrals 
                     WHERE referrer_id=%s AND rewarded=1 AND date >= %s""",
                  (user_id, start_date))
-        referral_earnings = c.fetchone().values().__iter__().__next__()
+        referral_earnings = float(c.fetchone().values().__iter__().__next__())
         
-        # Channel bonus (one-time)
         if period == 'all':
             c.execute("SELECT channel_claimed FROM users WHERE user_id=%s", (user_id,))
             result = c.fetchone()
@@ -414,7 +420,8 @@ def get_earnings_stats(user_id, period='all'):
             'channel': channel_bonus,
             'total': gmail_earnings + referral_earnings + channel_bonus
         }
-# ==================== START COMMAND ====================
+# ==================== PART 3: START COMMAND AND BASIC CALLBACKS ====================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
@@ -427,13 +434,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message_to_use.reply_text("⛔ You are blocked from using this bot.")
         return
     
-    # Handle referral
+    # Handle referral with self-referral protection
     ref_id = None
     if context.args:
         try:
             ref_id = int(context.args[0])
             if ref_id == user.id:
-                ref_id = None
+                ref_id = None  # PREVENT SELF-REFERRAL
         except:
             pass
     
@@ -447,18 +454,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          VALUES (%s, %s, %s, %s, %s)""",
                       (user.id, user.username, user.first_name, ref_id, datetime.now().isoformat()))
             
-            # Register referral but DON'T reward yet
-            if ref_id:
+            # Register referral but DON'T reward yet (rewarded after first approval)
+            if ref_id and ref_id != user.id:
                 c.execute("SELECT user_id FROM users WHERE user_id=%s", (ref_id,))
                 if c.fetchone():
                     try:
-                        c.execute("SELECT id FROM referrals WHERE referred_id=%s", (user.id,))
-                        if not c.fetchone():
-                            c.execute("INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded) VALUES (%s,%s,%s,%s,%s)",
-                                     (ref_id, user.id, 5, datetime.now().isoformat(), 0))
-                            await notify_user(context, ref_id, 
-                                f"🎉 {user.first_name} joined via your link!\n\n"
-                                f"You'll earn ₹5 when they complete their first approved Gmail submission.")
+                        c.execute("INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded) VALUES (%s,%s,%s,%s,%s)",
+                                 (ref_id, user.id, 5, datetime.now().isoformat(), 0))
+                        await notify_user(context, ref_id, 
+                            f"🎉 {user.first_name} joined via your link!\n\n"
+                            f"You'll earn ₹5 when they complete their first approved Gmail submission.")
                     except psycopg2.IntegrityError:
                         pass
     
@@ -506,7 +511,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await message_to_use.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 
-# ==================== CALLBACK HANDLERS ====================
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -517,25 +521,31 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     d = q.data
     
-    # CHANNEL CLAIM
+    # CHANNEL CLAIM - IDEMPOTENT
     if d == "claim_channel":
         await q.answer("Checking membership...", show_alert=False)
         
         if await check_channel(q.from_user.id, context):
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT channel_claimed FROM users WHERE user_id=%s", (q.from_user.id,))
+                # ATOMIC UPDATE - Only claim if not already claimed
+                c.execute("""
+                    UPDATE users 
+                    SET balance=balance+1, channel_claimed=1 
+                    WHERE user_id=%s AND channel_claimed=0
+                    RETURNING user_id
+                """, (q.from_user.id,))
+                
                 result = c.fetchone()
                 
-                if result and result['channel_claimed'] == 0:
-                    c.execute("UPDATE users SET balance=balance+1, channel_claimed=1 WHERE user_id=%s", 
-                             (q.from_user.id,))
+                if result:
+                    conn.commit()
                     await q.answer("✅ ₹1 added!", show_alert=True)
                     await q.message.reply_text("🎉 **₹1 credited!**\n\nThank you for joining!")
                 else:
                     await q.answer("❌ Already claimed!", show_alert=True)
         else:
-            await q.answer(f"❌ Join {TELEGRAM_CHANNEL} first, then click again!", show_alert=True)
+            await q.answer(f"❌ Join {TELEGRAM_CHANNEL} first!", show_alert=True)
         return
     
     # MENU
@@ -556,12 +566,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("📱 Main Menu", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
     
-    # SUBMIT GMAIL
+    # SUBMIT GMAIL - WITH COOLDOWN
     elif d == "submit":
         can_submit, wait_time = can_submit_gmail(q.from_user.id)
         
         if not can_submit:
-            await q.answer(f"⏳ Please wait {wait_time} seconds before submitting again!", show_alert=True)
+            await q.answer(f"⏳ Wait {wait_time}s before submitting again!", show_alert=True)
             
             temp_msg = await q.message.reply_text(
                 f"⏳ **Cooldown Active**\n\n"
@@ -570,7 +580,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=None
             )
             
-            import asyncio
             await asyncio.sleep(5)
             try:
                 await temp_msg.delete()
@@ -597,12 +606,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      (q.from_user.id,))
             result = c.fetchone()
             
-            c.execute("SELECT SUM(reward) FROM gmail WHERE user_id=%s AND status='pending'", 
+            c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
-            pending = c.fetchone().values().__iter__().__next__() or 0
+            pending = float(c.fetchone().values().__iter__().__next__() or 0)
         
-        bal, total, approved = (result['balance'], result['total_gmail'], result['approved_gmail']) if result else (0,0,0)
-        rate = calc_rate(q.from_user.id)
+        bal, total, approved = (float(result['balance']), result['total_gmail'], result['approved_gmail']) if result else (0,0,0)
+        rate = float(calc_rate(q.from_user.id))
         
         text = f"""💰 **Balance: ₹{bal:.2f}**
 
@@ -616,8 +625,9 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙", callback_data="menu")]
         ]), parse_mode=None)
-    
-    # EARNINGS DASHBOARD
+# ==================== PART 4: EARNINGS, REFERRAL AND HISTORY CALLBACKS ====================
+
+    # EARNINGS DASHBOARD (continuation of callback function)
     elif d == "earnings" or d.startswith("earnings_"):
         period = d.split("_")[1] if "_" in d else "all"
         
@@ -657,8 +667,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (q.from_user.id,))
             ref_count = list(c.fetchone().values())[0]
             
-            c.execute("SELECT SUM(reward) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            total_earned = c.fetchone().values().__iter__().__next__() or 0
+            c.execute("SELECT COALESCE(SUM(reward), 0) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
+            total_earned = float(c.fetchone().values().__iter__().__next__() or 0)
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (q.from_user.id,))
             pending_refs = c.fetchone().values().__iter__().__next__()
@@ -738,7 +748,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             [InlineKeyboardButton("🔙 Back", callback_data="referral")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-# HISTORY - Gmail submissions
+
+    # HISTORY - Gmail submissions
     elif d == "history" or d.startswith("history_gmail_"):
         page = validate_page(d.split("_")[-1]) if "_" in d else 0
         offset = page * 5
@@ -757,7 +768,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         if subs:
             for sub in subs:
                 emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[sub['status']]
-                text += f"{emoji} {mask_email(sub['email'])}\n   {sub['status'].title()} - ₹{sub['reward'] or 0}"
+                reward_val = float(sub['reward']) if sub['reward'] else 0
+                text += f"{emoji} {mask_email(sub['email'])}\n   {sub['status'].title()} - ₹{reward_val}"
                 if sub['rejection_reason']:
                     text += f"\n   ⚠️ {sub['rejection_reason']}"
                 text += "\n\n"
@@ -790,8 +802,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                         LIMIT 5 OFFSET %s""", (q.from_user.id, offset))
             withdrawals = c.fetchall()
             
-            row = c.fetchone()
-            pending = row[list(row.keys())[0]]
+            c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s", (q.from_user.id,))
+            total = c.fetchone().values().__iter__().__next__()
         
         text = f"💸 **Withdrawal History** (Page {page+1})\n\n"
         if withdrawals:
@@ -799,10 +811,10 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[w['status']]
                 method_emoji = "📱" if w['method'] == 'upi' else "💎"
                 
-                fee = w['fee'] if w['fee'] is not None else 0
-                final_amount = w['final_amount'] if w['final_amount'] is not None else w['amount']
+                fee = float(w['fee']) if w['fee'] is not None else 0
+                final_amount = float(w['final_amount']) if w['final_amount'] is not None else float(w['amount'])
                 
-                text += f"{emoji} {method_emoji} ₹{w['amount']:.2f}\n"
+                text += f"{emoji} {method_emoji} ₹{float(w['amount']):.2f}\n"
                 text += f"   Fee: ₹{fee:.2f} | Final: ₹{final_amount:.2f}\n"
                 text += f"   {w['status'].title()} - {w['request_date'][:10]}\n"
                 if w['rejection_reason']:
@@ -824,8 +836,9 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+# ==================== PART 5: WITHDRAWAL AND PROFILE CALLBACKS ====================
 
-    # WITHDRAW
+    # WITHDRAW - ATOMIC BALANCE CHECK
     elif d == "withdraw":
         with get_db() as conn:
             c = conn.cursor()
@@ -840,7 +853,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         can_withdraw, remaining = can_withdraw_today(q.from_user.id)
         
         if result:
-            bal, usdt, upi = result['balance'], result['usdt_address'], result['upi_id']
+            bal, usdt, upi = float(result['balance']), result['usdt_address'], result['upi_id']
             
             if not can_withdraw:
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Daily limit reached!\nYou can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day.\n\nTry again tomorrow."
@@ -852,8 +865,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Minimum: ₹100"
                 kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
             else:
-                example_fee, example_final = calculate_withdrawal_fee(100)
-                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n**Min:** ₹100\n**Today:** {remaining}/{MAX_WITHDRAWALS_PER_DAY} left\n\n**Fee:** {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n*Example: ₹100 → Fee ₹{example_fee:.2f} → You get ₹{example_final:.2f}*\n\nChoose method:"
+                example_fee, example_final = calculate_withdrawal_fee(Decimal("100"))
+                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n**Min:** ₹100\n**Today:** {remaining}/{MAX_WITHDRAWALS_PER_DAY} left\n\n**Fee:** {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n*Example: ₹100 → Fee ₹{float(example_fee):.2f} → You get ₹{float(example_final):.2f}*\n\nChoose method:"
                 kb = [
                     [InlineKeyboardButton("📱 UPI" + (" ✅" if upi else ""), callback_data="withdraw_upi")],
                     [InlineKeyboardButton("💎 USDT" + (" ✅" if usdt else ""), callback_data="withdraw_usdt")],
@@ -933,8 +946,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             ref_count = list(c.fetchone().values())[0]
         
         if result:
-            bal, approved, usdt, upi, joined = result['balance'], result['approved_gmail'], result['usdt_address'], result['upi_id'], result['joined_date']
-            rate = calc_rate(q.from_user.id)
+            bal, approved, usdt, upi, joined = float(result['balance']), result['approved_gmail'], result['usdt_address'], result['upi_id'], result['joined_date']
+            rate = float(calc_rate(q.from_user.id))
             
             text = f"""👤 **Profile**
 
@@ -1048,7 +1061,9 @@ Contact our support team:
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-# ==================== ADMIN PANEL ====================
+# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (IDEMPOTENT) ====================
+
+    # ADMIN PANEL
     elif d == "admin" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
@@ -1124,7 +1139,7 @@ Contact our support team:
 """
             
             for idx, gmail in enumerate(gmails, 1):
-                gid, email, pwd, reward = gmail['id'], gmail['email'], gmail['password'], gmail['reward']
+                gid, email, pwd, reward = gmail['id'], gmail['email'], gmail['password'], float(gmail['reward'])
                 text += f"""
 **{idx}. Gmail #{gid}**
 📧 `{email}`
@@ -1152,63 +1167,76 @@ Contact our support team:
             q.data = "gmail_queue"
             await callback(update, context)
 
-    # APPROVE SINGLE GMAIL
+    # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC
     elif d.startswith("approve_") and not d.startswith("approve_all_"):
         gid = int(d.split("_")[1])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, reward, status, email FROM gmail WHERE id=%s", (gid,))
+                
+                # ATOMIC UPDATE - Only approve if status is still 'pending'
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='approved', review_date=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, reward, email
+                """, (datetime.now().isoformat(), gid))
+                
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("❌ Gmail not found!", show_alert=True)
+                    await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
-                if result['status'] != 'pending':
-                    await q.answer(f"⚠️ Already {result['status']}!", show_alert=True)
-                    return
+                uid, reward, email = result['user_id'], round_decimal(result['reward']), result['email']
                 
-                uid, reward, email = result['user_id'], result['reward'], result['email']
-                
+                # Check if this is first approval
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
-                first_approval = c.fetchone().values().__iter__().__next__() == 0
+                approval_count = c.fetchone().values().__iter__().__next__()
+                is_first_approval = (approval_count == 1)
                 
-                c.execute("UPDATE gmail SET status='approved', review_date=%s WHERE id=%s",
-                         (datetime.now().isoformat(), gid))
+                # Credit balance
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+1 WHERE user_id=%s",
                          (reward, uid))
                 
-                if first_approval:
-                    c.execute("SELECT referrer_id FROM users WHERE user_id=%s", (uid,))
+                # IDEMPOTENT REFERRAL REWARD - Only if first approval
+                if is_first_approval:
+                    c.execute("""
+                        UPDATE referrals 
+                        SET rewarded=1 
+                        WHERE referred_id=%s AND rewarded=0
+                        RETURNING referrer_id, reward
+                    """, (uid,))
+                    
                     ref_result = c.fetchone()
-                    if ref_result and ref_result['referrer_id']:
+                    if ref_result:
                         referrer_id = ref_result['referrer_id']
-                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=%s AND referrer_id=%s", 
-                                 (uid, referrer_id))
-                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=%s", (referrer_id,))
+                        ref_reward = round_decimal(ref_result['reward'])
+                        
+                        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", 
+                                 (ref_reward, referrer_id))
                         
                         c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
                         referred_name = c.fetchone()['first_name']
                         
-                        await notify_user(context, referrer_id, 
+                        await notify_user(context, referrer_id,
                             f"🎉 **Referral Reward!**\n\n"
                             f"{referred_name} completed their first approved Gmail!\n\n"
-                            f"**You earned:** ₹5\n"
+                            f"**You earned:** ₹{float(ref_reward):.2f}\n"
                             f"**Keep referring for more rewards!**")
                 
                 conn.commit()
                 
-                log_audit("approve_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email} - ₹{reward}")
+                log_audit("approve_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email} - ₹{float(reward):.2f}")
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"✅ **Gmail Verified!**\n\n"
                     f"**Gmail:** `{mask_email(email)}`\n"
-                    f"**Amount Credited:** ₹{reward}\n\n"
+                    f"**Amount Credited:** ₹{float(reward):.2f}\n\n"
                     f"Thank you for your submission!")
                 
-                await q.answer(f"✅ Approved! ₹{reward} credited", show_alert=True)
+                await q.answer(f"✅ Approved! ₹{float(reward):.2f} credited", show_alert=True)
                 
                 q.data = f'user_gmail_{uid}'
                 await callback(update, context)
@@ -1216,33 +1244,34 @@ Contact our support team:
             logger.error(f"Error approving gmail {gid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-    # REJECT SINGLE GMAIL
+    # REJECT SINGLE GMAIL - IDEMPOTENT
     elif d.startswith("reject_") and not d.startswith("reject_all_"):
         gid = int(d.split("_")[1])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, status, email FROM gmail WHERE id=%s", (gid,))
+                
+                # ATOMIC UPDATE - Only reject if status is still 'pending'
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='rejected', review_date=%s, rejection_reason=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, email
+                """, (datetime.now().isoformat(), "Invalid/duplicate account", gid))
+                
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("❌ Gmail not found!", show_alert=True)
-                    return
-                
-                if result['status'] != 'pending':
-                    await q.answer(f"⚠️ Already {result['status']}!", show_alert=True)
+                    await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
                 uid, email = result['user_id'], result['email']
-                
-                c.execute("UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s WHERE id=%s",
-                         (datetime.now().isoformat(), "Invalid/duplicate account", gid))
                 conn.commit()
                 
                 log_audit("reject_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email}")
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"❌ **Gmail Rejected**\n\n"
                     f"**Gmail:** `{mask_email(email)}`\n"
                     f"**Reason:** Invalid/duplicate account\n\n"
@@ -1256,14 +1285,17 @@ Contact our support team:
         except Exception as e:
             logger.error(f"Error rejecting gmail {gid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
+# ==================== PART 7: APPROVE/REJECT ALL & WITHDRAWAL QUEUE ====================
 
-    # APPROVE ALL
+    # APPROVE ALL - IDEMPOTENT & ATOMIC
     elif d.startswith("approve_all_"):
         uid = int(d.split("_")[2])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
+                
+                # Get all pending gmails
                 c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
                 gmails = c.fetchall()
                 
@@ -1273,57 +1305,71 @@ Contact our support team:
                     await callback(update, context)
                     return
                 
+                # Check if this is first approval
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
                 is_first_approval = c.fetchone().values().__iter__().__next__() == 0
                 
-                total_reward = sum(row['reward'] for row in gmails)
+                total_reward = sum(round_decimal(row['reward']) for row in gmails)
                 count = len(gmails)
                 
-                c.execute("UPDATE gmail SET status='approved', review_date=%s WHERE user_id=%s AND status='pending'",
-                         (datetime.now().isoformat(), uid))
+                # ATOMIC BATCH UPDATE
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='approved', review_date=%s 
+                    WHERE user_id=%s AND status='pending'
+                """, (datetime.now().isoformat(), uid))
+                
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+%s WHERE user_id=%s",
                          (total_reward, count, uid))
                 
+                # IDEMPOTENT REFERRAL REWARD
                 if is_first_approval:
-                    c.execute("SELECT referrer_id FROM users WHERE user_id=%s", (uid,))
+                    c.execute("""
+                        UPDATE referrals 
+                        SET rewarded=1 
+                        WHERE referred_id=%s AND rewarded=0
+                        RETURNING referrer_id, reward
+                    """, (uid,))
+                    
                     ref_result = c.fetchone()
-                    if ref_result and ref_result['referrer_id']:
+                    if ref_result:
                         referrer_id = ref_result['referrer_id']
-                        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=%s AND referrer_id=%s", 
-                                 (uid, referrer_id))
-                        c.execute("UPDATE users SET balance=balance+5 WHERE user_id=%s", (referrer_id,))
+                        ref_reward = round_decimal(ref_result['reward'])
+                        
+                        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", 
+                                 (ref_reward, referrer_id))
                         
                         c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
                         referred_name = c.fetchone()['first_name']
                         
-                        await notify_user(context, referrer_id, 
+                        await notify_user(context, referrer_id,
                             f"🎉 **Referral Reward!**\n\n"
                             f"{referred_name} completed their first approved Gmail!\n\n"
-                            f"**You earned:** ₹5\n"
+                            f"**You earned:** ₹{float(ref_reward):.2f}\n"
                             f"**Keep referring for more rewards!**")
                 
                 conn.commit()
                 
-                log_audit("approve_all_gmail", ADMIN_ID, uid, f"{count} gmails - ₹{total_reward}")
+                log_audit("approve_all_gmail", ADMIN_ID, uid, f"{count} gmails - ₹{float(total_reward):.2f}")
                 
                 email_list = "\n".join([f"• {mask_email(g['email'])}" for g in gmails[:5]])
                 if len(gmails) > 5:
                     email_list += f"\n• ...and {len(gmails) - 5} more"
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"✅ **All Gmail Verified!**\n\n"
                     f"**Total Verified:** {count} accounts\n"
-                    f"**Amount Credited:** ₹{total_reward}\n\n"
+                    f"**Amount Credited:** ₹{float(total_reward):.2f}\n\n"
                     f"**Verified Accounts:**\n{email_list}\n\n"
                     f"Your balance has been updated. Thank you!")
                 
-                await q.answer(f"✅ {count} approved! ₹{total_reward} credited", show_alert=True)
+                await q.answer(f"✅ {count} approved! ₹{float(total_reward):.2f} credited", show_alert=True)
                 
                 await q.edit_message_text(
                     f"✅ **Batch Approved**\n\n"
                     f"**User ID:** `{uid}`\n"
                     f"**Gmail Approved:** {count}\n"
-                    f"**Total Amount:** ₹{total_reward}\n\n"
+                    f"**Total Amount:** ₹{float(total_reward):.2f}\n\n"
                     f"User has been notified.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
                     parse_mode=None
@@ -1332,13 +1378,14 @@ Contact our support team:
             logger.error(f"Error approving all gmails for user {uid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-    # REJECT ALL
+    # REJECT ALL - ATOMIC
     elif d.startswith("reject_all_"):
         uid = int(d.split("_")[2])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
+                
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
                 count = list(c.fetchone().values())[0]
                 
@@ -1348,13 +1395,18 @@ Contact our support team:
                     await callback(update, context)
                     return
                 
-                c.execute("UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s WHERE user_id=%s AND status='pending'",
-                         (datetime.now().isoformat(), "Quality issues", uid))
+                # ATOMIC BATCH UPDATE
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='rejected', review_date=%s, rejection_reason=%s 
+                    WHERE user_id=%s AND status='pending'
+                """, (datetime.now().isoformat(), "Quality issues", uid))
+                
                 conn.commit()
                 
                 log_audit("reject_all_gmail", ADMIN_ID, uid, f"{count} gmails rejected")
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"❌ **Gmail Submissions Rejected**\n\n"
                     f"**Total Rejected:** {count} accounts\n"
                     f"**Reason:** Quality issues\n\n"
@@ -1376,7 +1428,7 @@ Contact our support team:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-# WITHDRAWAL QUEUE
+    # WITHDRAWAL QUEUE
     elif d == "withdrawal_queue" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
@@ -1388,13 +1440,13 @@ Contact our support team:
             sub = c.fetchone()
         
         if sub:
-            wid, amount, fee, final_amount, method, info, date = sub['id'], sub['amount'], sub['fee'], sub['final_amount'], sub['method'], sub['payment_info'], sub['request_date']
+            wid, amount, fee, final_amount, method, info, date = sub['id'], float(sub['amount']), float(sub['fee']), float(sub['final_amount']), sub['method'], sub['payment_info'], sub['request_date']
             name, username, uid = sub['first_name'], sub['username'], sub['user_id']
             
             text = f"""💸 **Withdrawal #{wid}**
 
 👤 {name} (@{username or 'N/A'})
-💰 **Amount:** ₹{amount}
+💰 **Amount:** ₹{amount:.2f}
 💳 **Fee:** ₹{fee:.2f}
 💵 **Final Amount:** ₹{final_amount:.2f}
 💳 **Method:** {method.upper()}
@@ -1412,36 +1464,37 @@ Contact our support team:
             await q.edit_message_text("❌ No pending withdrawals!",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
     
-    # APPROVE WITHDRAWAL
+    # APPROVE WITHDRAWAL - IDEMPOTENT
     elif d.startswith("aw_"):
         wid = int(d.split("_")[1])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, amount, final_amount, status FROM withdrawals WHERE id=%s", (wid,))
+                
+                # ATOMIC UPDATE - Only approve if status is still 'pending'
+                c.execute("""
+                    UPDATE withdrawals 
+                    SET status='approved', processed_date=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, amount, final_amount
+                """, (datetime.now().isoformat(), wid))
+                
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("❌ Withdrawal not found!", show_alert=True)
+                    await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
-                if result['status'] != 'pending':
-                    await q.answer(f"⚠️ Already {result['status']}!", show_alert=True)
-                    return
-                
-                uid, amount, final_amount = result['user_id'], result['amount'], result['final_amount']
-                
-                c.execute("UPDATE withdrawals SET status='approved', processed_date=%s WHERE id=%s",
-                         (datetime.now().isoformat(), wid))
+                uid, amount, final_amount = result['user_id'], float(result['amount']), float(result['final_amount'])
                 conn.commit()
                 
-                log_audit("approve_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount}")
+                log_audit("approve_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount:.2f}")
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"✅ **Withdrawal Approved!**\n\n"
                     f"**Withdrawal ID:** #{wid}\n"
-                    f"**Amount:** ₹{amount}\n"
+                    f"**Amount:** ₹{amount:.2f}\n"
                     f"**Final Amount:** ₹{final_amount:.2f}\n\n"
                     f"Your payment has been processed successfully.\n"
                     f"Please check your payment method.")
@@ -1454,37 +1507,40 @@ Contact our support team:
             logger.error(f"Error approving withdrawal {wid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-    # REJECT WITHDRAWAL
+    # REJECT WITHDRAWAL - ATOMIC WITH REFUND
     elif d.startswith("rw_"):
         wid = int(d.split("_")[1])
         
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT user_id, amount, status FROM withdrawals WHERE id=%s", (wid,))
+                
+                # ATOMIC UPDATE - Only reject if status is still 'pending'
+                c.execute("""
+                    UPDATE withdrawals 
+                    SET status='rejected', processed_date=%s, rejection_reason=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, amount
+                """, (datetime.now().isoformat(), "Payment info invalid", wid))
+                
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("❌ Withdrawal not found!", show_alert=True)
+                    await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
-                if result['status'] != 'pending':
-                    await q.answer(f"⚠️ Already {result['status']}!", show_alert=True)
-                    return
+                uid, amount = result['user_id'], round_decimal(result['amount'])
                 
-                uid, amount = result['user_id'], result['amount']
-                
-                c.execute("UPDATE withdrawals SET status='rejected', processed_date=%s, rejection_reason=%s WHERE id=%s",
-                         (datetime.now().isoformat(), "Payment info invalid", wid))
+                # REFUND TO BALANCE
                 c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
                 conn.commit()
                 
-                log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount} refunded")
+                log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded")
                 
-                await notify_user(context, uid, 
+                await notify_user(context, uid,
                     f"❌ **Withdrawal Rejected**\n\n"
                     f"**Withdrawal ID:** #{wid}\n"
-                    f"**Amount:** ₹{amount}\n"
+                    f"**Amount:** ₹{float(amount):.2f}\n"
                     f"**Reason:** Invalid payment information\n\n"
                     f"**Amount refunded to your balance.**\n"
                     f"Please update your payment details and try again.")
@@ -1496,7 +1552,8 @@ Contact our support team:
         except Exception as e:
             logger.error(f"Error rejecting withdrawal {wid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
-    
+# ==================== PART 8: ADMIN STATS AND MESSAGE HANDLERS ====================
+
     # USER MANAGEMENT
     elif d == "user_mgmt" and q.from_user.id == ADMIN_ID:
         await q.edit_message_text("👥 **User Management**\n\nSend user ID:\n\n/cancel to abort", parse_mode=None)
@@ -1516,17 +1573,17 @@ Contact our support team:
             c.execute("SELECT COUNT(*) FROM gmail WHERE status='approved'")
             approved = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT SUM(balance) FROM users")
-            total_bal = c.fetchone().values().__iter__().__next__() or 0
+            total_bal = float(c.fetchone().values().__iter__().__next__() or 0)
             c.execute("SELECT SUM(reward) FROM gmail WHERE status='approved'")
-            paid = c.fetchone().values().__iter__().__next__() or 0
+            paid = float(c.fetchone().values().__iter__().__next__() or 0)
             c.execute("SELECT COUNT(*) FROM referrals WHERE rewarded=1")
             refs = c.fetchone().values().__iter__().__next__()
             c.execute("SELECT SUM(reward) FROM referrals WHERE rewarded=1")
-            ref_paid = c.fetchone().values().__iter__().__next__() or 0
+            ref_paid = float(c.fetchone().values().__iter__().__next__() or 0)
             c.execute("SELECT SUM(final_amount) FROM withdrawals WHERE status='approved'")
-            withdrawn = c.fetchone().values().__iter__().__next__() or 0
+            withdrawn = float(c.fetchone().values().__iter__().__next__() or 0)
             c.execute("SELECT SUM(fee) FROM withdrawals WHERE status='approved'")
-            fees_collected = c.fetchone().values().__iter__().__next__() or 0
+            fees_collected = float(c.fetchone().values().__iter__().__next__() or 0)
         
         text = f"""📊 **Statistics**
 
@@ -1577,16 +1634,18 @@ Contact our support team:
 async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email = update.message.text.strip()
     
-    is_valid, error_msg = validate_email(email)
+    is_valid, result = validate_email(email)
     if not is_valid:
         await update.message.reply_text(
-            f"❌ **{error_msg}**\n\n"
+            f"❌ **{result}**\n\n"
             f"Allowed domains: {', '.join(ALLOWED_DOMAINS)}\n"
             f"Please send a valid email address.\n"
             "/cancel to abort",
             parse_mode=None
         )
         return EMAIL
+    
+    email = result  # Use normalized email
     
     duplicate = check_duplicate_email(email)
     if duplicate:
@@ -1650,7 +1709,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ **Submitted Successfully!**\n\n"
             f"**ID:** #{gid}\n"
             f"**Email:** {mask_email(email)}\n"
-            f"**Reward:** ₹{reward}\n\n"
+            f"**Reward:** ₹{float(reward)}\n\n"
             f"⏳ Under review (24-48h)",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
@@ -1664,7 +1723,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🆔 `{uid}`\n\n"
                 f"📧 `{email}`\n"
                 f"🔑 `{pwd}`\n"
-                f"💰 ₹{reward}",
+                f"💰 ₹{float(reward)}",
                 parse_mode=None
             )
         except Exception as e:
@@ -1755,10 +1814,11 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=None
         )
         return ConversationHandler.END
-    
+# ==================== PART 9: WITHDRAWAL HANDLER, ERROR HANDLER AND MAIN ====================
+
 async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        amount = float(update.message.text.strip())
+        amount = Decimal(update.message.text.strip())
         
         if amount < 100:
             await update.message.reply_text(
@@ -1794,13 +1854,13 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                     await update.message.reply_text("❌ Error occurred")
                     return ConversationHandler.END
                 
-                balance = result['balance']
+                balance = round_decimal(result['balance'])
                 
                 if amount > balance:
                     await update.message.reply_text(
                         f"❌ **Insufficient balance!**\n\n"
-                        f"**Balance:** ₹{balance:.2f}\n"
-                        f"**Requested:** ₹{amount}",
+                        f"**Balance:** ₹{float(balance):.2f}\n"
+                        f"**Requested:** ₹{float(amount):.2f}",
                         parse_mode=None
                     )
                     return WITHDRAW_AMT
@@ -1808,8 +1868,23 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 payment_info = result['upi_id'] if method == 'upi' else result['usdt_address']
                 method_name = "UPI" if method == 'upi' else "USDT TRC20"
                 
-                c.execute("UPDATE users SET balance=balance-%s WHERE user_id=%s", 
-                         (amount, update.effective_user.id))
+                # ATOMIC DEDUCTION - Deduct balance IMMEDIATELY
+                c.execute("""
+                    UPDATE users 
+                    SET balance=balance-%s 
+                    WHERE user_id=%s AND balance >= %s
+                    RETURNING balance
+                """, (amount, update.effective_user.id, amount))
+                
+                updated = c.fetchone()
+                
+                if not updated:
+                    await update.message.reply_text(
+                        "❌ **Insufficient balance!**\n\n"
+                        "Your balance may have changed. Please try again.",
+                        parse_mode=None
+                    )
+                    return ConversationHandler.END
                 
                 c.execute("""INSERT INTO withdrawals (user_id, amount, fee, final_amount, method, payment_info, request_date)
                              VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
@@ -1832,9 +1907,9 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             f"✅ **Withdrawal Requested!**\n\n"
             f"**ID:** #{wid}\n"
-            f"**Amount:** ₹{amount}\n"
-            f"**Fee:** ₹{fee:.2f}\n"
-            f"**Final Amount:** ₹{final_amount:.2f}\n"
+            f"**Amount:** ₹{float(amount):.2f}\n"
+            f"**Fee:** ₹{float(fee):.2f}\n"
+            f"**Final Amount:** ₹{float(final_amount):.2f}\n"
             f"**Method:** {method_name}\n\n"
             f"⏳ Processing within 24-48h",
             reply_markup=InlineKeyboardMarkup(kb),
@@ -1847,9 +1922,9 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 f"🆕 **Withdrawal Request**\n\n"
                 f"👤 {update.effective_user.first_name}\n"
                 f"🆔 `{update.effective_user.id}`\n\n"
-                f"💰 **Amount:** ₹{amount}\n"
-                f"💳 **Fee:** ₹{fee:.2f}\n"
-                f"💵 **Final:** ₹{final_amount:.2f}\n"
+                f"💰 **Amount:** ₹{float(amount):.2f}\n"
+                f"💳 **Fee:** ₹{float(fee):.2f}\n"
+                f"💵 **Final:** ₹{float(final_amount):.2f}\n"
                 f"💳 **Method:** {method_name}\n"
                 f"📄 **Info:** `{payment_info}`",
                 parse_mode=None
@@ -1897,7 +1972,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         if result:
             username, name, bal, total, approved, blocked, joined = (
-                result['username'], result['first_name'], result['balance'], 
+                result['username'], result['first_name'], float(result['balance']), 
                 result['total_gmail'], result['approved_gmail'], result['is_blocked'], result['joined_date']
             )
             status = "🔴 Blocked" if blocked else "🟢 Active"
@@ -1976,7 +2051,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled", reply_markup=InlineKeyboardMarkup(kb))
     return ConversationHandler.END
 
-# ==================== TEXT MESSAGE HANDLER ====================
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages (for Start button and other interactions)"""
     text = update.message.text.lower().strip()
@@ -1990,7 +2064,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=InlineKeyboardMarkup(kb)
         )
 
-# ==================== ERROR HANDLER ====================
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log errors and notify admin"""
     logger.error(f"Exception while handling an update: {context.error}")
@@ -2006,19 +2079,18 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as e:
         logger.error(f"Failed to send error notification: {e}")
 
-# ==================== MAIN ====================
 def main():
     print("🚀 Starting bot...")
     print("=" * 50)
+    print("⚠️ Ensure only ONE Railway instance is running")
 
     init_db()
-    print("✅ Database initialized successfully!")
 
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Conversation handlers
     gmail_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^submit$")],
         states={
             EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
@@ -2028,7 +2100,7 @@ def main():
     )
 
     withdraw_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^withdraw_(upi|usdt)$")],
         states={
             WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
@@ -2037,28 +2109,28 @@ def main():
     )
 
     usdt_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_usdt$")],
         states={USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     upi_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^set_upi$")],
         states={UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     user_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^user_mgmt$")],
         states={USER_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_user_search)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     broadcast_conv = ConversationHandler(
-    per_message=False,
+        per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)]},
         fallbacks=[CommandHandler("cancel", cancel)],
@@ -2076,9 +2148,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
     app.add_error_handler(error_handler)
 
-    print("🚀 Bot is running (polling)...")
+    print("✅ Bot is running (polling)...")
 
-    # ✅ THIS is the correct way
     app.run_polling()
 
 
