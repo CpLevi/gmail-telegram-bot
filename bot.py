@@ -333,18 +333,35 @@ async def check_channel(user_id, context):
         return False
 
 def calc_rate(user_id):
-    """Calculate reward rate based on approved Gmail"""
+    """
+    Calculate reward rate based on LAST 100 approved Gmail (rolling window)
+    
+    Slabs:
+    0–49   → ₹20
+    50–99  → ₹25
+    100    → ₹30
+    """
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("SELECT approved_gmail FROM users WHERE user_id=%s", (user_id,))
-        result = c.fetchone()
-        approved = result['approved_gmail'] if result else 0
-        
-    if approved >= 100:
+
+        # Count approved Gmail in last 100 approvals
+        c.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT id FROM gmail
+                WHERE user_id = %s AND status = 'approved'
+                ORDER BY review_date DESC
+                LIMIT 100
+            ) AS last_100
+        """, (user_id,))
+
+        approved_in_last_100 = list(c.fetchone().values())[0]
+
+    if approved_in_last_100 >= 100:
         return Decimal("30")
-    elif approved >= 50:
+    elif approved_in_last_100 >= 50:
         return Decimal("25")
-    return Decimal("20")
+    else:
+        return Decimal("20")
 
 def is_blocked(user_id):
     """Check if user is blocked"""
