@@ -1062,6 +1062,7 @@ Contact our support team:
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
 # ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (MODIFIED WITH PAGINATION) ====================
+# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (MODIFIED WITH PAGINATION) ====================
 
     # ADMIN PANEL
     elif d == "admin" and q.from_user.id == ADMIN_ID:
@@ -1270,7 +1271,7 @@ Contact our support team:
                 
                 await notify_user(context, uid,
                     f"✅ **Gmail Verified!**\n\n"
-                    f"**Gmail:** `{mask_email(email)}`\n"
+                    f"**Gmail:** `{email}`\n"
                     f"**Amount Credited:** ₹{float(reward):.2f}\n\n"
                     f"Thank you for your submission!")
                 
@@ -1315,7 +1316,7 @@ Contact our support team:
                 
                 await notify_user(context, uid,
                     f"❌ **Gmail Rejected**\n\n"
-                    f"**Gmail:** `{mask_email(email)}`\n"
+                    f"**Gmail:** `{email}`\n"
                     f"**Reason:** Invalid/duplicate account\n\n"
                     f"**No amount has been credited.**\n"
                     f"Please submit valid Gmail accounts only.")
