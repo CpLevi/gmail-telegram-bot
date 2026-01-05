@@ -1,6 +1,3 @@
-# ==================== PART 1: IMPORTS AND DATABASE SETUP ====================
-# SECURE TASK EARNING BOT - PRODUCTION READY v5.0 - PostgreSQL Compatible
-
 import telegram
 print("PTB VERSION:", telegram.__version__)
 
@@ -47,7 +44,7 @@ MAX_PENDING_WITHDRAWALS = 2
 SUBMIT_COOLDOWN = 20  # seconds
 MAX_PAGINATION_PAGE = 50
 
-EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH = range(7)
+EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH, BULK_GMAIL = range(8)
 
 @contextmanager
 def get_db():
@@ -177,7 +174,6 @@ def init_db():
         
         conn.commit()
         logger.info("✅ Database initialized successfully")
-# ==================== PART 2: VALIDATION AND HELPER FUNCTIONS ====================
 
 def round_decimal(value):
     """Round to 2 decimal places properly"""
@@ -437,7 +433,6 @@ def get_earnings_stats(user_id, period='all'):
             'channel': channel_bonus,
             'total': gmail_earnings + referral_earnings + channel_bonus
         }
-# ==================== PART 3: START COMMAND AND BASIC CALLBACKS ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -448,7 +443,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     if is_blocked(user.id):
-        await message_to_use.reply_text("⛔ You are blocked from using this bot.")
+        await message_to_use.reply_text("⛔ Your account has been blocked from using this service.")
         return
     
     # Handle referral with self-referral protection
@@ -479,18 +474,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         c.execute("INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded) VALUES (%s,%s,%s,%s,%s)",
                                  (ref_id, user.id, 5, datetime.now().isoformat(), 0))
                         await notify_user(context, ref_id, 
-                            f"🎉 {user.first_name} joined via your link!\n\n"
-                            f"You'll earn ₹5 when they complete their first approved Gmail submission.")
+                            f"New referral: {user.first_name}\n\n"
+                            f"You will earn ₹5 when they complete their first verified submission.")
                     except psycopg2.IntegrityError:
                         pass
     
     kb = [
         [InlineKeyboardButton("📧 Submit Gmail", callback_data="submit")],
+        [InlineKeyboardButton("📦 Bulk Submit (2-20)", callback_data="bulk_submit")],
         [InlineKeyboardButton("💰 Balance", callback_data="balance"),
          InlineKeyboardButton("📋 History", callback_data="history")],
         [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
          InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("👥 Refer Friends", callback_data="referral")],
+        [InlineKeyboardButton("👥 Refer & Earn", callback_data="referral")],
         [InlineKeyboardButton("📊 Earnings", callback_data="earnings")],
         [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
          InlineKeyboardButton("❓ Help", callback_data="help")]
@@ -505,23 +501,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = c.fetchone()
         claimed = result['channel_claimed'] if result else 0
     
-    text = f"""🎉 **Welcome {user.first_name}!**
+    text = f"""Welcome {user.first_name}
 
-💼 **Gmail Rates:**
--  0-49: ₹20/account
--  50-99: ₹25/account
--  100+: ₹30/account
+Earn money by submitting Gmail accounts.
 
-🎁 **Bonuses:**
--  Channel: ₹1 (one-time)
--  Referral: ₹5/friend (after 1st approval)
+Rates per account:
+- 0-49 accounts: ₹20
+- 50-99 accounts: ₹25
+- 100+ accounts: ₹30
 
-💸 **Withdrawal Fee:** {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})
+Bonus earnings:
+- Join channel: ₹1 (one-time)
+- Refer friends: ₹5 per person
 
-📢 Join: {TELEGRAM_CHANNEL}"""
+Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
+
+Join our channel: {TELEGRAM_CHANNEL}"""
     
     if not claimed:
-        text += "\n\n⚡ **Join = ₹1 FREE!**"
+        text += "\n\n⚡ Join channel to claim ₹1 bonus"
         channel_url = f"https://t.me/{TELEGRAM_CHANNEL.lstrip('@')}"
         kb.insert(0, [InlineKeyboardButton("📢 Join Channel", url=channel_url)])
         kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1", callback_data="claim_channel")])
@@ -533,7 +531,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     
     if is_blocked(q.from_user.id) and q.from_user.id != ADMIN_ID:
-        await q.answer("⛔ Blocked!", show_alert=True)
+        await q.answer("Your account is blocked", show_alert=True)
         return
     
     d = q.data
@@ -557,30 +555,31 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 if result:
                     conn.commit()
-                    await q.answer("✅ ₹1 added!", show_alert=True)
-                    await q.message.reply_text("🎉 **₹1 credited!**\n\nThank you for joining!")
+                    await q.answer("₹1 added to your balance", show_alert=True)
+                    await q.message.reply_text("Bonus credited: ₹1\n\nThank you for joining our channel.")
                 else:
-                    await q.answer("❌ Already claimed!", show_alert=True)
+                    await q.answer("You have already claimed this bonus", show_alert=True)
         else:
-            await q.answer(f"❌ Join {TELEGRAM_CHANNEL} first!", show_alert=True)
+            await q.answer(f"Please join {TELEGRAM_CHANNEL} first", show_alert=True)
         return
     
     # MENU
     if d == "menu":
         kb = [
             [InlineKeyboardButton("📧 Submit", callback_data="submit")],
+            [InlineKeyboardButton("📦 Bulk Submit (2-20)", callback_data="bulk_submit")],
             [InlineKeyboardButton("💰 Balance", callback_data="balance"),
              InlineKeyboardButton("📋 History", callback_data="history")],
             [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
              InlineKeyboardButton("👤 Profile", callback_data="profile")],
-            [InlineKeyboardButton("👥 Refer Friends", callback_data="referral")],
+            [InlineKeyboardButton("👥 Refer & Earn", callback_data="referral")],
             [InlineKeyboardButton("📊 Earnings", callback_data="earnings")],
             [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
              InlineKeyboardButton("❓ Help", callback_data="help")]
         ]
         if q.from_user.id == ADMIN_ID:
             kb.append([InlineKeyboardButton("⚙️ ADMIN", callback_data="admin")])
-        await q.edit_message_text("📱 Main Menu", reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text("Main Menu", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
     
     # SUBMIT GMAIL - WITH COOLDOWN
@@ -588,12 +587,12 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         can_submit, wait_time = can_submit_gmail(q.from_user.id)
         
         if not can_submit:
-            await q.answer(f"⏳ Wait {wait_time}s before submitting again!", show_alert=True)
+            await q.answer(f"Please wait {wait_time} seconds", show_alert=True)
             
             temp_msg = await q.message.reply_text(
-                f"⏳ **Cooldown Active**\n\n"
-                f"Please wait **{wait_time} seconds** before submitting another Gmail.\n\n"
-                f"This prevents spam and helps us process your submissions better.",
+                f"Cooldown active\n\n"
+                f"Please wait {wait_time} seconds before submitting again.\n\n"
+                f"This helps us process submissions efficiently.",
                 parse_mode=None
             )
             
@@ -606,14 +605,48 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         await q.edit_message_text(
-            "📧 **Submit Gmail**\n\n"
-            f"Send the email address:\n\n"
-            f"✅ Allowed: {', '.join(ALLOWED_DOMAINS)}\n"
-            f"⚠️ Only YOUR OWN accounts!\n"
-            "/cancel to abort",
+            f"Submit Gmail Account\n\n"
+            f"Send the email address\n\n"
+            f"Allowed: {', '.join(ALLOWED_DOMAINS)}\n"
+            f"Only submit your own accounts\n\n"
+            f"/cancel to abort",
             parse_mode=None
         )
         return EMAIL
+    
+    # BULK SUBMIT GMAIL
+    elif d == "bulk_submit":
+        can_submit, wait_time = can_submit_gmail(q.from_user.id)
+        
+        if not can_submit:
+            await q.answer(f"Please wait {wait_time} seconds", show_alert=True)
+            
+            temp_msg = await q.message.reply_text(
+                f"Cooldown active\n\n"
+                f"Please wait {wait_time} seconds before submitting.\n\n"
+                f"This helps us process submissions efficiently.",
+                parse_mode=None
+            )
+            
+            await asyncio.sleep(5)
+            try:
+                await temp_msg.delete()
+            except:
+                pass
+            
+            return
+        
+        await q.edit_message_text(
+            "Bulk Gmail Submission\n\n"
+            "Submit 2-20 Gmail accounts at once\n\n"
+            "Format (one per line):\n"
+            "email@gmail.com | password123\n"
+            "email2@gmail.com | pass456\n\n"
+            "Use | (pipe) to separate email and password\n\n"
+            "/cancel to abort",
+            parse_mode=None
+        )
+        return BULK_GMAIL
     
     # BALANCE
     elif d == "balance":
@@ -630,21 +663,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal, total, approved = (float(result['balance']), result['total_gmail'], result['approved_gmail']) if result else (0,0,0)
         rate = float(calc_rate(q.from_user.id))
         
-        text = f"""💰 **Balance: ₹{bal:.2f}**
+        text = f"""Balance: ₹{bal:.2f}
 
-**Rate:** ₹{rate}/account
-⏳ **Pending:** ₹{pending:.2f}
+Current rate: ₹{rate} per account
+Pending verification: ₹{pending:.2f}
 
-📊 **Stats:**
-✅ Approved: {approved}
-📧 Total: {total}"""
+Statistics:
+Approved: {approved}
+Total submitted: {total}"""
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]), parse_mode=None)
-# ==================== PART 4: EARNINGS, REFERRAL AND HISTORY CALLBACKS ====================
 
-    # EARNINGS DASHBOARD (continuation of callback function)
+# EARNINGS DASHBOARD (continuation of callback function)
     elif d == "earnings" or d.startswith("earnings_"):
         period = d.split("_")[1] if "_" in d else "all"
         
@@ -657,15 +689,15 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'all': 'All Time'
         }
         
-        text = f"""📊 **Earnings Dashboard**
+        text = f"""Earnings Dashboard
 
-**Period:** {period_names.get(period, 'All Time')}
+Period: {period_names.get(period, 'All Time')}
 
-📧 **Gmail:** ₹{stats['gmail']:.2f}
-👥 **Referrals:** ₹{stats['referral']:.2f}
-📢 **Channel Bonus:** ₹{stats['channel']:.2f}
-━━━━━━━━━━━━━━━━
-💰 **Total:** ₹{stats['total']:.2f}"""
+Gmail submissions: ₹{stats['gmail']:.2f}
+Referrals: ₹{stats['referral']:.2f}
+Channel bonus: ₹{stats['channel']:.2f}
+
+Total: ₹{stats['total']:.2f}"""
         
         kb = [
             [InlineKeyboardButton("📅 Today", callback_data="earnings_today"),
@@ -693,23 +725,20 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bot_user = context.bot.username
         ref_link = f"https://t.me/{bot_user}?start={q.from_user.id}"
         
-        text = f"""👥 **Refer & Earn**
+        text = f"""Refer & Earn
 
-💰 **Earn ₹5 per referral!**
-*Reward credited after their 1st approved Gmail*
+Earn ₹5 for each friend you refer
+Reward is credited after their first verified submission
 
-📊 **Your Stats:**
-- Total Referrals: {ref_count}
-- Pending Rewards: {pending_refs}
-- Total Earned: ₹{total_earned:.2f}
+Your statistics:
+Total referrals: {ref_count}
+Pending rewards: {pending_refs}
+Total earned: ₹{total_earned:.2f}
 
-🔗 **Your Referral Link:**
-`{ref_link}`
+Your referral link:
+{ref_link}
 
-📱 **Share this link with friends!**
-When they join and get their first Gmail approved, you get ₹5 instantly.
-
-💡 **Tip:** Share on WhatsApp, Facebook, or other social media to maximize your earnings!"""
+Share this link with friends to start earning."""
         
         kb = [
             [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
@@ -746,7 +775,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
             user_refs = c.fetchone().values().__iter__().__next__()
         
-        text = "🏆 **Referral Leaderboard**\n\n"
+        text = "Referral Leaderboard\n\n"
         
         if top_referrers:
             medals = ["🥇", "🥈", "🥉"]
@@ -754,12 +783,12 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 medal = medals[idx-1] if idx <= 3 else f"{idx}."
                 name = row['first_name']
                 refs = row['ref_count']
-                text += f"{medal} **{name}** - {refs} referrals\n"
+                text += f"{medal} {name} - {refs} referrals\n"
         else:
-            text += "No referrals yet. Be the first!\n"
+            text += "No referrals yet\n"
         
-        text += f"\n🔍 **Your Rank:** #{user_rank}\n"
-        text += f"👥 **Your Referrals:** {user_refs}"
+        text += f"\nYour rank: #{user_rank}\n"
+        text += f"Your referrals: {user_refs}"
         
         kb = [
             [InlineKeyboardButton("🔙 Back", callback_data="referral")]
@@ -781,17 +810,17 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s", (q.from_user.id,))
             total = c.fetchone().values().__iter__().__next__()
         
-        text = f"📋 **Gmail History** (Page {page+1})\n\n"
+        text = f"Gmail History (Page {page+1})\n\n"
         if subs:
             for sub in subs:
                 emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[sub['status']]
                 reward_val = float(sub['reward']) if sub['reward'] else 0
                 text += f"{emoji} {mask_email(sub['email'])}\n   {sub['status'].title()} - ₹{reward_val}"
                 if sub['rejection_reason']:
-                    text += f"\n   ⚠️ {sub['rejection_reason']}"
+                    text += f"\n   Reason: {sub['rejection_reason']}"
                 text += "\n\n"
         else:
-            text += "No submissions yet."
+            text += "No submissions yet"
         
         kb = []
         nav = []
@@ -822,7 +851,7 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             c.execute("SELECT COUNT(*) FROM withdrawals WHERE user_id=%s", (q.from_user.id,))
             total = c.fetchone().values().__iter__().__next__()
         
-        text = f"💸 **Withdrawal History** (Page {page+1})\n\n"
+        text = f"Withdrawal History (Page {page+1})\n\n"
         if withdrawals:
             for w in withdrawals:
                 emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[w['status']]
@@ -835,10 +864,10 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
                 text += f"   Fee: ₹{fee:.2f} | Final: ₹{final_amount:.2f}\n"
                 text += f"   {w['status'].title()} - {w['request_date'][:10]}\n"
                 if w['rejection_reason']:
-                    text += f"   ⚠️ {w['rejection_reason']}\n"
+                    text += f"   Reason: {w['rejection_reason']}\n"
                 text += "\n"
         else:
-            text += "No withdrawals yet."
+            text += "No withdrawals yet"
         
         kb = []
         nav = []
@@ -853,9 +882,8 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb.append([InlineKeyboardButton("🔙 Back", callback_data="menu")])
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-# ==================== PART 5: WITHDRAWAL AND PROFILE CALLBACKS ====================
 
-    # WITHDRAW - ATOMIC BALANCE CHECK
+# WITHDRAW - ATOMIC BALANCE CHECK
     elif d == "withdraw":
         with get_db() as conn:
             c = conn.cursor()
@@ -873,27 +901,27 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             bal, usdt, upi = float(result['balance']), result['usdt_address'], result['upi_id']
             
             if not can_withdraw:
-                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Daily limit reached!\nYou can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day.\n\nTry again tomorrow."
-                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
+                text = f"Withdraw\n\nBalance: ₹{bal:.2f}\n\nDaily withdrawal limit reached\nYou can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day\n\nTry again tomorrow"
+                kb = [[InlineKeyboardButton("🔙 Back", callback_data="menu")]]
             elif pending_count >= MAX_PENDING_WITHDRAWALS:
-                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ You have {pending_count} pending requests.\nWait for processing."
-                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
+                text = f"Withdraw\n\nBalance: ₹{bal:.2f}\n\nYou have {pending_count} pending requests\nPlease wait for processing"
+                kb = [[InlineKeyboardButton("🔙 Back", callback_data="menu")]]
             elif bal < 100:
-                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n\n❌ Minimum: ₹100"
-                kb = [[InlineKeyboardButton("🔙", callback_data="menu")]]
+                text = f"Withdraw\n\nBalance: ₹{bal:.2f}\n\nMinimum withdrawal amount: ₹100"
+                kb = [[InlineKeyboardButton("🔙 Back", callback_data="menu")]]
             else:
                 example_fee, example_final = calculate_withdrawal_fee(Decimal("100"))
-                text = f"💸 **Withdraw**\n\n**Balance:** ₹{bal:.2f}\n**Min:** ₹100\n**Today:** {remaining}/{MAX_WITHDRAWALS_PER_DAY} left\n\n**Fee:** {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n*Example: ₹100 → Fee ₹{float(example_fee):.2f} → You get ₹{float(example_final):.2f}*\n\nChoose method:"
+                text = f"Withdraw\n\nBalance: ₹{bal:.2f}\nMinimum: ₹100\nToday: {remaining}/{MAX_WITHDRAWALS_PER_DAY} left\n\nFee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})\nExample: ₹100 → Fee ₹{float(example_fee):.2f} → You get ₹{float(example_final):.2f}\n\nChoose withdrawal method:"
                 kb = [
                     [InlineKeyboardButton("📱 UPI" + (" ✅" if upi else ""), callback_data="withdraw_upi")],
                     [InlineKeyboardButton("💎 USDT" + (" ✅" if usdt else ""), callback_data="withdraw_usdt")],
-                    [InlineKeyboardButton("⚙️ Setup", callback_data="setup_payment")],
-                    [InlineKeyboardButton("🔙", callback_data="menu")]
+                    [InlineKeyboardButton("⚙️ Setup Payment", callback_data="setup_payment")],
+                    [InlineKeyboardButton("🔙 Back", callback_data="menu")]
                 ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
-            await q.edit_message_text("❌ Error!", 
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="menu")]]))
+            await q.edit_message_text("Error occurred", 
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]]))
     
     # WITHDRAW UPI
     elif d == "withdraw_upi":
@@ -903,12 +931,12 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             result = c.fetchone()
         
         if not result or not result['upi_id']:
-            await q.answer("❌ Setup UPI first!", show_alert=True)
+            await q.answer("Please setup UPI first", show_alert=True)
             return
         
         context.user_data['withdraw_method'] = 'upi'
         await q.edit_message_text(
-            "💸 **Withdraw via UPI**\n\nEnter amount (Min: ₹100):\n\n/cancel to abort",
+            "Withdraw via UPI\n\nEnter amount (Minimum: ₹100)\n\n/cancel to abort",
             parse_mode=None
         )
         return WITHDRAW_AMT
@@ -921,12 +949,12 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             result = c.fetchone()
         
         if not result or not result['usdt_address']:
-            await q.answer("❌ Setup USDT first!", show_alert=True)
+            await q.answer("Please setup USDT address first", show_alert=True)
             return
         
         context.user_data['withdraw_method'] = 'usdt'
         await q.edit_message_text(
-            "💸 **Withdraw via USDT**\n\nEnter amount (Min: ₹100):\n\n/cancel to abort",
+            "Withdraw via USDT\n\nEnter amount (Minimum: ₹100)\n\n/cancel to abort",
             parse_mode=None
         )
         return WITHDRAW_AMT
@@ -936,18 +964,18 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
         kb = [
             [InlineKeyboardButton("📱 UPI", callback_data="set_upi")],
             [InlineKeyboardButton("💎 USDT", callback_data="set_usdt")],
-            [InlineKeyboardButton("🔙", callback_data="withdraw")]
+            [InlineKeyboardButton("🔙 Back", callback_data="withdraw")]
         ]
-        await q.edit_message_text("⚙️ **Setup Payment**\n\nChoose:", 
+        await q.edit_message_text("Setup Payment Method\n\nChoose:", 
                                   reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     elif d == "set_upi":
-        await q.edit_message_text("📱 **Setup UPI**\n\nSend UPI ID:\n/cancel to abort", 
+        await q.edit_message_text("Setup UPI\n\nSend your UPI ID\n/cancel to abort", 
                                   parse_mode=None)
         return UPI_ID
     
     elif d == "set_usdt":
-        await q.edit_message_text("💎 **Setup USDT**\n\nSend TRC20 address:\n/cancel to abort", 
+        await q.edit_message_text("Setup USDT\n\nSend your TRC20 address\n/cancel to abort", 
                                   parse_mode=None)
         return USDT_ADDRESS
     
@@ -966,22 +994,22 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             bal, approved, usdt, upi, joined = float(result['balance']), result['approved_gmail'], result['usdt_address'], result['upi_id'], result['joined_date']
             rate = float(calc_rate(q.from_user.id))
             
-            text = f"""👤 **Profile**
+            text = f"""Profile
 
-**Balance:** ₹{bal:.2f}
-**Rate:** ₹{rate}/account
-**Approved:** {approved}
-**Referrals:** {ref_count}
+Balance: ₹{bal:.2f}
+Current rate: ₹{rate} per account
+Approved submissions: {approved}
+Successful referrals: {ref_count}
 
-💳 **Payment:**
--  UPI: {"✅" if upi else "❌"}
--  USDT: {"✅" if usdt else "❌"}
+Payment methods:
+UPI: {"✅ Setup" if upi else "❌ Not setup"}
+USDT: {"✅ Setup" if usdt else "❌ Not setup"}
 
-📅 **Joined:** {joined[:10]}"""
+Joined: {joined[:10]}"""
             
             kb = [
-                [InlineKeyboardButton("⚙️ Payment", callback_data="setup_payment")],
-                [InlineKeyboardButton("🔙", callback_data="menu")]
+                [InlineKeyboardButton("⚙️ Payment Methods", callback_data="setup_payment")],
+                [InlineKeyboardButton("🔙 Back", callback_data="menu")]
             ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
@@ -993,18 +1021,18 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             result = c.fetchone()
             notif = result['notifications_enabled'] if result else 1
         
-        text = f"""⚙️ **Settings**
+        text = f"""Settings
 
-**Notifications:** {"🔔 ON" if notif else "🔕 OFF"}
+Notifications: {"🔔 Enabled" if notif else "🔕 Disabled"}
 
-📞 **Support:** @{SUPPORT_USERNAME}
-📜 **Terms:** Click below"""
+Support: @{SUPPORT_USERNAME}
+Terms & Conditions: Click below"""
         
         kb = [
-            [InlineKeyboardButton("🔕 OFF" if notif else "🔔 ON", callback_data="toggle_notif")],
+            [InlineKeyboardButton("🔕 Disable" if notif else "🔔 Enable", callback_data="toggle_notif")],
             [InlineKeyboardButton("📜 Terms", callback_data="view_terms")],
             [InlineKeyboardButton("📞 Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
@@ -1017,71 +1045,68 @@ When they join and get their first Gmail approved, you get ₹5 instantly.
             c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (q.from_user.id,))
             new_state = c.fetchone().values().__iter__().__next__()
         
-        await q.answer(f"{'🔔 Enabled' if new_state else '🔕 Disabled'}!", show_alert=True)
+        await q.answer(f"{'🔔 Notifications enabled' if new_state else '🔕 Notifications disabled'}", show_alert=True)
         q.data = "settings"
         await callback(update, context)
     
     # VIEW TERMS
     elif d == "view_terms":
-        text = f"""📜 **Terms & Conditions**
+        text = f"""Terms & Conditions
 
-1️⃣ Submit only YOUR accounts
-2️⃣ No fake/stolen accounts
-3️⃣ Min withdrawal: ₹100
-4️⃣ Max {MAX_WITHDRAWALS_PER_DAY} withdrawals/day
-5️⃣ Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})
-6️⃣ Processing: 24-48h
-7️⃣ Only {', '.join(ALLOWED_DOMAINS)} allowed
-8️⃣ Referral rewards after 1st approval
-9️⃣ Suspicious activity = Ban
+1. Submit only your own accounts
+2. No fake or stolen accounts
+3. Minimum withdrawal: ₹100
+4. Maximum {MAX_WITHDRAWALS_PER_DAY} withdrawals per day
+5. Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
+6. Processing time: 24-48 hours
+7. Only {', '.join(ALLOWED_DOMAINS)} allowed
+8. Referral rewards after first verified submission
+9. Suspicious activity will result in account suspension
 
-**Support:** @{SUPPORT_USERNAME}"""
+Support: @{SUPPORT_USERNAME}"""
         
-        kb = [[InlineKeyboardButton("🔙", callback_data="settings")]]
+        kb = [[InlineKeyboardButton("🔙 Back", callback_data="settings")]]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # HELP
     elif d == "help":
-        text = f"""❓ **Help & Support**
+        text = f"""Help & Support
 
-**How it works:**
-1️⃣ Submit your Gmail accounts
-2️⃣ Wait for approval (24-48h)
-3️⃣ Earn based on your tier
-4️⃣ Withdraw when you reach ₹100
+How it works:
+1. Submit your Gmail accounts
+2. Wait for verification (24-48 hours)
+3. Earn based on your tier
+4. Withdraw when you reach ₹100
 
-**Earning Rates:**
--  0-49 accounts: ₹20 each
--  50-99 accounts: ₹25 each
--  100+ accounts: ₹30 each
+Earning rates:
+- 0-49 accounts: ₹20 each
+- 50-99 accounts: ₹25 each
+- 100+ accounts: ₹30 each
 
-**Bonuses:**
--  Channel join: ₹1
--  Referral: ₹5 per friend (after 1st approval)
+Bonus earnings:
+- Channel join: ₹1
+- Referral: ₹5 per friend (after first verified submission)
 
-**Withdrawal:**
--  Minimum: ₹100
--  Fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})
--  Limit: {MAX_WITHDRAWALS_PER_DAY} per day
--  Methods: UPI & USDT
--  Processing: 24-48 hours
+Withdrawal:
+- Minimum: ₹100
+- Fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
+- Limit: {MAX_WITHDRAWALS_PER_DAY} per day
+- Methods: UPI & USDT
+- Processing: 24-48 hours
 
-**Allowed Emails:**
--  {', '.join(ALLOWED_DOMAINS)}
+Allowed emails:
+- {', '.join(ALLOWED_DOMAINS)}
 
-**Need Help?**
-Contact our support team:
+Need help? Contact support:
 @{SUPPORT_USERNAME}"""
         
         kb = [
             [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
+            [InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (MODIFIED WITH PAGINATION) ====================
-# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (MODIFIED WITH PAGINATION) ====================
 
-    # ADMIN PANEL
+# ADMIN PANEL
     elif d == "admin" and q.from_user.id == ADMIN_ID:
         with get_db() as conn:
             c = conn.cursor()
@@ -1092,19 +1117,19 @@ Contact our support team:
             c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
             pw = c.fetchone().values().__iter__().__next__()
         
-        text = f"""⚙️ **ADMIN**
+        text = f"""Admin Panel
 
-👥 Users: {users}
-📧 Pending Gmail: {pg}
-💸 Pending Withdrawals: {pw}"""
+Total users: {users}
+Pending Gmail: {pg}
+Pending withdrawals: {pw}"""
         
         kb = [
             [InlineKeyboardButton("📧 Gmail Queue", callback_data="gmail_queue")],
             [InlineKeyboardButton("💸 Withdrawals", callback_data="withdrawal_queue")],
-            [InlineKeyboardButton("👥 User Mgmt", callback_data="user_mgmt")],
+            [InlineKeyboardButton("👥 User Management", callback_data="user_mgmt")],
             [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
-            [InlineKeyboardButton("📊 Stats", callback_data="stats"),
-             InlineKeyboardButton("🔙", callback_data="menu")]
+            [InlineKeyboardButton("📊 Statistics", callback_data="stats"),
+             InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
@@ -1119,17 +1144,17 @@ Contact our support team:
             users_pending = c.fetchall()
         
         if users_pending:
-            text = "📧 **Gmail Queue**\n\n"
+            text = "Gmail Queue\n\n"
             kb = []
             for row in users_pending:
                 uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
-                text += f"👤 {name} (@{username or 'N/A'}) - {cnt}\n"
+                text += f"{name} (@{username or 'N/A'}) - {cnt} pending\n"
                 kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}_0")])
-            kb.append([InlineKeyboardButton("🔙", callback_data="admin")])
+            kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
-            await q.edit_message_text("❌ No pending Gmail!",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
+            await q.edit_message_text("No pending Gmail submissions",
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
     
     # Individual Gmail Review WITH PAGINATION
     elif d.startswith("user_gmail_"):
@@ -1158,41 +1183,39 @@ Contact our support team:
             name, username = user_info['first_name'], user_info['username']
             
             if not gmails:
-                await q.answer("✅ All reviewed!", show_alert=True)
+                await q.answer("All reviewed", show_alert=True)
                 q.data = "gmail_queue"
                 await callback(update, context)
                 return
             
             total_pages = (total_pending + GMAIL_PER_PAGE - 1) // GMAIL_PER_PAGE
             
-            text = f"""📧 **Gmail Review - {name}**
+            text = f"""Gmail Review - {name}
 
-👤 @{username or 'N/A'} (ID: `{uid}`)
-📊 **Total Pending:** {total_pending}
-📄 **Page {page + 1} of {total_pages}**
+User: @{username or 'N/A'} (ID: {uid})
+Total pending: {total_pending}
+Page {page + 1} of {total_pages}
 
-━━━━━━━━━━━━━━━
 """
             
             for idx, gmail in enumerate(gmails, 1):
                 gid, email, pwd, reward = gmail['id'], gmail['email'], gmail['password'], float(gmail['reward'])
-                text += f"""
-**{idx}. Gmail #{gid}**
-📧 `{email}`
-🔑 `{pwd}`
-💰 ₹{reward}
-━━━━━━━━━━━━━━━
+                text += f"""{idx}. Gmail #{gid}
+{email}
+{pwd}
+₹{reward}
+
 """
             
             kb = []
             
-            # Batch action buttons (always visible)
+            # Batch action buttons
             kb.append([
                 InlineKeyboardButton("✅ Approve All", callback_data=f"approve_all_{uid}"),
                 InlineKeyboardButton("❌ Reject All", callback_data=f"reject_all_{uid}")
             ])
             
-            # Individual Gmail buttons (max 5 per page)
+            # Individual Gmail buttons
             for gmail in gmails:
                 gid = gmail['id']
                 kb.append([
@@ -1215,11 +1238,11 @@ Contact our support team:
             
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
-            await q.answer("❌ User not found!", show_alert=True)
+            await q.answer("User not found", show_alert=True)
             q.data = "gmail_queue"
             await callback(update, context)
 
-    # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC (MODIFIED TO HANDLE PAGE)
+    # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC
     elif d.startswith("approve_") and not d.startswith("approve_all_"):
         parts = d.split("_")
         gid = int(parts[1])
@@ -1230,7 +1253,7 @@ Contact our support team:
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE - Only approve if status is still 'pending'
+                # ATOMIC UPDATE
                 c.execute("""
                     UPDATE gmail 
                     SET status='approved', review_date=%s 
@@ -1241,13 +1264,13 @@ Contact our support team:
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("⚠️ Already processed!", show_alert=True)
+                    await q.answer("Already processed", show_alert=True)
                     return
                 
                 uid_from_db, reward, email = result['user_id'], round_decimal(result['reward']), result['email']
                 uid = uid if uid else uid_from_db
                 
-                # Check if this is first approval
+                # Check if first approval
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
                 approval_count = c.fetchone().values().__iter__().__next__()
                 is_first_approval = (approval_count == 1)
@@ -1256,7 +1279,7 @@ Contact our support team:
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+1 WHERE user_id=%s",
                          (reward, uid))
                 
-                # IDEMPOTENT REFERRAL REWARD - Only if first approval
+                # IDEMPOTENT REFERRAL REWARD
                 if is_first_approval:
                     c.execute("""
                         UPDATE referrals 
@@ -1277,30 +1300,29 @@ Contact our support team:
                         referred_name = c.fetchone()['first_name']
                         
                         await notify_user(context, referrer_id,
-                            f"🎉 **Referral Reward!**\n\n"
-                            f"{referred_name} completed their first approved Gmail!\n\n"
-                            f"**You earned:** ₹{float(ref_reward):.2f}\n"
-                            f"**Keep referring for more rewards!**")
+                            f"Referral bonus earned\n\n"
+                            f"{referred_name} completed their first verified submission\n\n"
+                            f"Amount credited: ₹{float(ref_reward):.2f}")
                 
                 conn.commit()
                 
                 log_audit("approve_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email} - ₹{float(reward):.2f}")
                 
                 await notify_user(context, uid,
-                    f"✅ **Gmail Verified!**\n\n"
-                    f"**Gmail:** `{email}`\n"
-                    f"**Amount Credited:** ₹{float(reward):.2f}\n\n"
-                    f"Thank you for your submission!")
+                    f"Gmail verified\n\n"
+                    f"Email: {email}\n"
+                    f"Amount credited: ₹{float(reward):.2f}\n\n"
+                    f"Thank you for your submission")
                 
-                await q.answer(f"✅ Approved! ₹{float(reward):.2f} credited", show_alert=True)
+                await q.answer(f"Approved - ₹{float(reward):.2f} credited", show_alert=True)
                 
                 q.data = f'user_gmail_{uid}_{page}'
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error approving gmail {gid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
+            await q.answer("Error occurred", show_alert=True)
     
-    # REJECT SINGLE GMAIL - IDEMPOTENT (MODIFIED TO HANDLE PAGE)
+    # REJECT SINGLE GMAIL - IDEMPOTENT
     elif d.startswith("reject_") and not d.startswith("reject_all_"):
         parts = d.split("_")
         gid = int(parts[1])
@@ -1311,18 +1333,18 @@ Contact our support team:
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE - Only reject if status is still 'pending'
+                # ATOMIC UPDATE
                 c.execute("""
                     UPDATE gmail 
                     SET status='rejected', review_date=%s, rejection_reason=%s 
                     WHERE id=%s AND status='pending'
                     RETURNING user_id, email
-                """, (datetime.now().isoformat(), "Invalid/duplicate account", gid))
+                """, (datetime.now().isoformat(), "Invalid or duplicate account", gid))
                 
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("⚠️ Already processed!", show_alert=True)
+                    await q.answer("Already processed", show_alert=True)
                     return
                 
                 uid_from_db, email = result['user_id'], result['email']
@@ -1332,22 +1354,21 @@ Contact our support team:
                 log_audit("reject_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email}")
                 
                 await notify_user(context, uid,
-                    f"❌ **Gmail Rejected**\n\n"
-                    f"**Gmail:** `{email}`\n"
-                    f"**Reason:** Invalid/duplicate account\n\n"
-                    f"**No amount has been credited.**\n"
-                    f"Please submit valid Gmail accounts only.")
+                    f"Gmail submission rejected\n\n"
+                    f"Email: {email}\n"
+                    f"Reason: Invalid or duplicate account\n\n"
+                    f"No amount has been credited\n"
+                    f"Please submit valid Gmail accounts only")
                 
-                await q.answer("❌ Rejected", show_alert=True)
+                await q.answer("Rejected", show_alert=True)
                 
                 q.data = f'user_gmail_{uid}_{page}'
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error rejecting gmail {gid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
-# ==================== PART 7: APPROVE/REJECT ALL & WITHDRAWAL QUEUE ====================
+            await q.answer("Error occurred", show_alert=True)
 
-    # APPROVE ALL - IDEMPOTENT & ATOMIC
+# APPROVE ALL - IDEMPOTENT & ATOMIC
     elif d.startswith("approve_all_"):
         uid = int(d.split("_")[2])
         
@@ -1360,12 +1381,12 @@ Contact our support team:
                 gmails = c.fetchall()
                 
                 if not gmails:
-                    await q.answer("❌ No pending Gmail found!", show_alert=True)
+                    await q.answer("No pending Gmail found", show_alert=True)
                     q.data = "gmail_queue"
                     await callback(update, context)
                     return
                 
-                # Check if this is first approval
+                # Check if first approval
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
                 is_first_approval = c.fetchone().values().__iter__().__next__() == 0
                 
@@ -1403,10 +1424,9 @@ Contact our support team:
                         referred_name = c.fetchone()['first_name']
                         
                         await notify_user(context, referrer_id,
-                            f"🎉 **Referral Reward!**\n\n"
-                            f"{referred_name} completed their first approved Gmail!\n\n"
-                            f"**You earned:** ₹{float(ref_reward):.2f}\n"
-                            f"**Keep referring for more rewards!**")
+                            f"Referral bonus earned\n\n"
+                            f"{referred_name} completed their first verified submission\n\n"
+                            f"Amount credited: ₹{float(ref_reward):.2f}")
                 
                 conn.commit()
                 
@@ -1417,26 +1437,26 @@ Contact our support team:
                     email_list += f"\n• ...and {len(gmails) - 5} more"
                 
                 await notify_user(context, uid,
-                    f"✅ **All Gmail Verified!**\n\n"
-                    f"**Total Verified:** {count} accounts\n"
-                    f"**Amount Credited:** ₹{float(total_reward):.2f}\n\n"
-                    f"**Verified Accounts:**\n{email_list}\n\n"
-                    f"Your balance has been updated. Thank you!")
+                    f"All Gmail verified\n\n"
+                    f"Total verified: {count} accounts\n"
+                    f"Amount credited: ₹{float(total_reward):.2f}\n\n"
+                    f"Verified accounts:\n{email_list}\n\n"
+                    f"Your balance has been updated")
                 
-                await q.answer(f"✅ {count} approved! ₹{float(total_reward):.2f} credited", show_alert=True)
+                await q.answer(f"{count} approved - ₹{float(total_reward):.2f} credited", show_alert=True)
                 
                 await q.edit_message_text(
-                    f"✅ **Batch Approved**\n\n"
-                    f"**User ID:** `{uid}`\n"
-                    f"**Gmail Approved:** {count}\n"
-                    f"**Total Amount:** ₹{float(total_reward):.2f}\n\n"
-                    f"User has been notified.",
+                    f"Batch approved\n\n"
+                    f"User ID: {uid}\n"
+                    f"Gmail approved: {count}\n"
+                    f"Total amount: ₹{float(total_reward):.2f}\n\n"
+                    f"User has been notified",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
                     parse_mode=None
                 )
         except Exception as e:
             logger.error(f"Error approving all gmails for user {uid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
+            await q.answer("Error occurred", show_alert=True)
     
     # REJECT ALL - ATOMIC
     elif d.startswith("reject_all_"):
@@ -1450,7 +1470,7 @@ Contact our support team:
                 count = list(c.fetchone().values())[0]
                 
                 if count == 0:
-                    await q.answer("❌ No pending Gmail found!", show_alert=True)
+                    await q.answer("No pending Gmail found", show_alert=True)
                     q.data = "gmail_queue"
                     await callback(update, context)
                     return
@@ -1467,26 +1487,26 @@ Contact our support team:
                 log_audit("reject_all_gmail", ADMIN_ID, uid, f"{count} gmails rejected")
                 
                 await notify_user(context, uid,
-                    f"❌ **Gmail Submissions Rejected**\n\n"
-                    f"**Total Rejected:** {count} accounts\n"
-                    f"**Reason:** Quality issues\n\n"
-                    f"**No amount has been credited.**\n"
-                    f"Please review submission guidelines and submit valid accounts.")
+                    f"Gmail submissions rejected\n\n"
+                    f"Total rejected: {count} accounts\n"
+                    f"Reason: Quality issues\n\n"
+                    f"No amount has been credited\n"
+                    f"Please review submission guidelines")
                 
-                await q.answer(f"❌ {count} rejected", show_alert=True)
+                await q.answer(f"{count} rejected", show_alert=True)
                 
                 await q.edit_message_text(
-                    f"❌ **Batch Rejected**\n\n"
-                    f"**User ID:** `{uid}`\n"
-                    f"**Gmail Rejected:** {count}\n"
-                    f"**Reason:** Quality issues\n\n"
-                    f"User has been notified.",
+                    f"Batch rejected\n\n"
+                    f"User ID: {uid}\n"
+                    f"Gmail rejected: {count}\n"
+                    f"Reason: Quality issues\n\n"
+                    f"User has been notified",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
                     parse_mode=None
                 )
         except Exception as e:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
+            await q.answer("Error occurred", show_alert=True)
     
     # WITHDRAWAL QUEUE
     elif d == "withdrawal_queue" and q.from_user.id == ADMIN_ID:
@@ -1503,26 +1523,26 @@ Contact our support team:
             wid, amount, fee, final_amount, method, info, date = sub['id'], float(sub['amount']), float(sub['fee']), float(sub['final_amount']), sub['method'], sub['payment_info'], sub['request_date']
             name, username, uid = sub['first_name'], sub['username'], sub['user_id']
             
-            text = f"""💸 **Withdrawal #{wid}**
+            text = f"""Withdrawal #{wid}
 
-👤 {name} (@{username or 'N/A'})
-💰 **Amount:** ₹{amount:.2f}
-💳 **Fee:** ₹{fee:.2f}
-💵 **Final Amount:** ₹{final_amount:.2f}
-💳 **Method:** {method.upper()}
-📄 **Info:** `{info}`
-📅 **Date:** {date[:16]}"""
+User: {name} (@{username or 'N/A'})
+Amount: ₹{amount:.2f}
+Fee: ₹{fee:.2f}
+Final amount: ₹{final_amount:.2f}
+Method: {method.upper()}
+Payment info: {info}
+Date: {date[:16]}"""
             
             kb = [
                 [InlineKeyboardButton("✅ Approve", callback_data=f"aw_{wid}"),
                  InlineKeyboardButton("❌ Reject", callback_data=f"rw_{wid}")],
                 [InlineKeyboardButton("➡️ Next", callback_data="withdrawal_queue"),
-                 InlineKeyboardButton("🔙", callback_data="admin")]
+                 InlineKeyboardButton("🔙 Back", callback_data="admin")]
             ]
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
-            await q.edit_message_text("❌ No pending withdrawals!",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
+            await q.edit_message_text("No pending withdrawals",
+                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
     
     # APPROVE WITHDRAWAL - IDEMPOTENT
     elif d.startswith("aw_"):
@@ -1532,7 +1552,7 @@ Contact our support team:
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE - Only approve if status is still 'pending'
+                # ATOMIC UPDATE
                 c.execute("""
                     UPDATE withdrawals 
                     SET status='approved', processed_date=%s 
@@ -1543,7 +1563,7 @@ Contact our support team:
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("⚠️ Already processed!", show_alert=True)
+                    await q.answer("Already processed", show_alert=True)
                     return
                 
                 uid, amount, final_amount = result['user_id'], float(result['amount']), float(result['final_amount'])
@@ -1552,20 +1572,20 @@ Contact our support team:
                 log_audit("approve_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount:.2f}")
                 
                 await notify_user(context, uid,
-                    f"✅ **Withdrawal Approved!**\n\n"
-                    f"**Withdrawal ID:** #{wid}\n"
-                    f"**Amount:** ₹{amount:.2f}\n"
-                    f"**Final Amount:** ₹{final_amount:.2f}\n\n"
-                    f"Your payment has been processed successfully.\n"
-                    f"Please check your payment method.")
+                    f"Withdrawal approved\n\n"
+                    f"Withdrawal ID: #{wid}\n"
+                    f"Amount: ₹{amount:.2f}\n"
+                    f"Final amount: ₹{final_amount:.2f}\n\n"
+                    f"Payment has been processed successfully\n"
+                    f"Please check your payment method")
                 
-                await q.answer("✅ Withdrawal approved!", show_alert=True)
+                await q.answer("Withdrawal approved", show_alert=True)
                 
                 q.data = "withdrawal_queue"
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error approving withdrawal {wid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
+            await q.answer("Error occurred", show_alert=True)
     
     # REJECT WITHDRAWAL - ATOMIC WITH REFUND
     elif d.startswith("rw_"):
@@ -1575,18 +1595,18 @@ Contact our support team:
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE - Only reject if status is still 'pending'
+                # ATOMIC UPDATE
                 c.execute("""
                     UPDATE withdrawals 
                     SET status='rejected', processed_date=%s, rejection_reason=%s 
                     WHERE id=%s AND status='pending'
                     RETURNING user_id, amount
-                """, (datetime.now().isoformat(), "Payment info invalid", wid))
+                """, (datetime.now().isoformat(), "Invalid payment information", wid))
                 
                 result = c.fetchone()
                 
                 if not result:
-                    await q.answer("⚠️ Already processed!", show_alert=True)
+                    await q.answer("Already processed", show_alert=True)
                     return
                 
                 uid, amount = result['user_id'], round_decimal(result['amount'])
@@ -1598,30 +1618,29 @@ Contact our support team:
                 log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded")
                 
                 await notify_user(context, uid,
-                    f"❌ **Withdrawal Rejected**\n\n"
-                    f"**Withdrawal ID:** #{wid}\n"
-                    f"**Amount:** ₹{float(amount):.2f}\n"
-                    f"**Reason:** Invalid payment information\n\n"
-                    f"**Amount refunded to your balance.**\n"
-                    f"Please update your payment details and try again.")
+                    f"Withdrawal rejected\n\n"
+                    f"Withdrawal ID: #{wid}\n"
+                    f"Amount: ₹{float(amount):.2f}\n"
+                    f"Reason: Invalid payment information\n\n"
+                    f"Amount refunded to your balance\n"
+                    f"Please update your payment details and try again")
                 
-                await q.answer("❌ Rejected & refunded", show_alert=True)
+                await q.answer("Rejected and refunded", show_alert=True)
                 
                 q.data = "withdrawal_queue"
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error rejecting withdrawal {wid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
-# ==================== PART 8: ADMIN STATS AND MESSAGE HANDLERS ====================
+            await q.answer("Error occurred", show_alert=True)
 
-    # USER MANAGEMENT
+# USER MANAGEMENT
     elif d == "user_mgmt" and q.from_user.id == ADMIN_ID:
-        await q.edit_message_text("👥 **User Management**\n\nSend user ID:\n\n/cancel to abort", parse_mode=None)
+        await q.edit_message_text("User Management\n\nSend user ID\n\n/cancel to abort", parse_mode=None)
         return USER_SEARCH
     
     # BROADCAST
     elif d == "broadcast" and q.from_user.id == ADMIN_ID:
-        await q.edit_message_text("📢 **Broadcast**\n\nSend message:\n\n/cancel to abort", parse_mode=None)
+        await q.edit_message_text("Broadcast Message\n\nSend message to all users\n\n/cancel to abort", parse_mode=None)
         return BROADCAST_MSG
     
     # STATS
@@ -1645,21 +1664,21 @@ Contact our support team:
             c.execute("SELECT SUM(fee) FROM withdrawals WHERE status='approved'")
             fees_collected = float(c.fetchone().values().__iter__().__next__() or 0)
         
-        text = f"""📊 **Statistics**
+        text = f"""Statistics
 
-👥 **Users:** {total_users}
-📧 **Approved:** {approved}
-🔗 **Referrals (Rewarded):** {refs}
+Total users: {total_users}
+Approved Gmail: {approved}
+Referrals rewarded: {refs}
 
-💰 **Balance:** ₹{total_bal:.2f}
-💸 **Paid (Gmail):** ₹{paid:.2f}
-💸 **Paid (Referral):** ₹{ref_paid:.2f}
-💸 **Total Paid:** ₹{paid + ref_paid:.2f}
-💵 **Withdrawn:** ₹{withdrawn:.2f}
-💳 **Fees Collected:** ₹{fees_collected:.2f}"""
+User balance: ₹{total_bal:.2f}
+Gmail paid: ₹{paid:.2f}
+Referral paid: ₹{ref_paid:.2f}
+Total paid: ₹{paid + ref_paid:.2f}
+Total withdrawn: ₹{withdrawn:.2f}
+Fees collected: ₹{fees_collected:.2f}"""
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙", callback_data="admin")]
+            [InlineKeyboardButton("🔙 Back", callback_data="admin")]
         ]), parse_mode=None)
     
     # TOGGLE BLOCK
@@ -1676,18 +1695,18 @@ Contact our support team:
             
             log_audit("block_user" if blocked else "unblock_user", ADMIN_ID, uid, "")
             
-            await q.answer(f"{'⛔ Blocked' if blocked else '✅ Unblocked'}!", show_alert=True)
+            await q.answer(f"{'Blocked' if blocked else 'Unblocked'}", show_alert=True)
             
             try:
                 await context.bot.send_message(
                     uid,
-                    "⛔ You have been blocked" if blocked else "✅ You have been unblocked"
+                    "Your account has been blocked" if blocked else "Your account has been unblocked"
                 )
             except:
                 pass
         except Exception as e:
             logger.error(f"Error blocking/unblocking user {uid}: {e}")
-            await q.answer("❌ Error occurred!", show_alert=True)
+            await q.answer("Error occurred", show_alert=True)
 
 # ==================== MESSAGE HANDLERS ====================
 
@@ -1697,15 +1716,15 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_valid, result = validate_email(email)
     if not is_valid:
         await update.message.reply_text(
-            f"❌ **{result}**\n\n"
+            f"Invalid email: {result}\n\n"
             f"Allowed domains: {', '.join(ALLOWED_DOMAINS)}\n"
-            f"Please send a valid email address.\n"
+            f"Please send a valid email address\n\n"
             "/cancel to abort",
             parse_mode=None
         )
         return EMAIL
     
-    email = result  # Use normalized email
+    email = result
     
     duplicate = check_duplicate_email(email)
     if duplicate:
@@ -1713,23 +1732,23 @@ async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         duplicate_user = duplicate['user_id']
         
         if duplicate_user == update.effective_user.id:
-            msg = "You already submitted this email."
+            msg = "You already submitted this email"
         else:
-            msg = "This email has already been submitted by another user."
+            msg = "This email has already been submitted"
         
         await update.message.reply_text(
-            f"❌ **Duplicate Email!**\n\n"
+            f"Duplicate email\n\n"
             f"{msg}\n"
             f"Status: {duplicate_status.title()}\n\n"
-            f"/cancel to abort or send a different email",
+            "/cancel to abort or send a different email",
             parse_mode=None
         )
         return EMAIL
     
     context.user_data['email'] = email
     await update.message.reply_text(
-        "✅ **Email received!**\n\n"
-        "Now send the password:\n"
+        "Email received\n\n"
+        "Now send the password\n"
         "(6-100 characters)",
         parse_mode=None
     )
@@ -1740,8 +1759,8 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not validate_password(pwd):
         await update.message.reply_text(
-            "❌ **Invalid password!**\n\n"
-            "Password must be 6-100 characters.\n"
+            "Invalid password\n\n"
+            "Password must be 6-100 characters\n\n"
             "/cancel to abort",
             parse_mode=None
         )
@@ -1766,11 +1785,11 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
         await update.message.reply_text(
-            f"✅ **Submitted Successfully!**\n\n"
-            f"**ID:** #{gid}\n"
-            f"**Email:** {mask_email(email)}\n"
-            f"**Reward:** ₹{float(reward)}\n\n"
-            f"⏳ Under review (24-48h)",
+            f"Submission successful\n\n"
+            f"ID: #{gid}\n"
+            f"Email: {mask_email(email)}\n"
+            f"Reward: ₹{float(reward)}\n\n"
+            f"Under review (24-48 hours)",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
         )
@@ -1778,12 +1797,12 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 ADMIN_ID,
-                f"🆕 **New Gmail**\n\n"
-                f"👤 {update.effective_user.first_name} (@{update.effective_user.username})\n"
-                f"🆔 `{uid}`\n\n"
-                f"📧 `{email}`\n"
-                f"🔑 `{pwd}`\n"
-                f"💰 ₹{float(reward)}",
+                f"New Gmail Submission\n\n"
+                f"User: {update.effective_user.first_name} (@{update.effective_user.username})\n"
+                f"User ID: {uid}\n\n"
+                f"Email: {email}\n"
+                f"Password: {pwd}\n"
+                f"Reward: ₹{float(reward)}",
                 parse_mode=None
             )
         except Exception as e:
@@ -1793,7 +1812,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     except psycopg2.IntegrityError:
         await update.message.reply_text(
-            "❌ **Duplicate submission!**\n\n"
+            "Duplicate submission\n\n"
             "This email was already submitted.",
             parse_mode=None
         )
@@ -1801,7 +1820,172 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in receive_password: {e}")
         await update.message.reply_text(
-            "❌ **Error occurred!**\n\n"
+            "Error occurred\n\n"
+            "Please try again later.",
+            parse_mode=None
+        )
+        return ConversationHandler.END
+
+# ==================== BULK GMAIL HANDLER ====================
+async def receive_bulk_gmail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle bulk Gmail submission (2-20 accounts)"""
+    uid = update.effective_user.id
+
+    # ✅ ADD THIS BLOCK HERE (EXACTLY HERE)
+    can_submit, wait_time = can_submit_gmail(uid)
+    if not can_submit:
+        await update.message.reply_text(
+            f"Please wait {wait_time} seconds before submitting again.",
+            parse_mode=None
+        )
+        return ConversationHandler.END
+    # ✅ END ADD
+
+    text = update.message.text.strip()
+    
+    # Parse lines
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    
+    # Validate count
+    if len(lines) < 2:
+        await update.message.reply_text(
+            "Minimum 2 accounts required\n\n"
+            "Format (one per line):\n"
+            "email@gmail.com | password123\n"
+            "email2@gmail.com | pass456\n\n"
+            "/cancel to abort",
+            parse_mode=None
+        )
+        return BULK_GMAIL
+    
+    if len(lines) > 20:
+        await update.message.reply_text(
+            "Maximum 20 accounts allowed\n\n"
+            f"You sent {len(lines)} accounts.\n"
+            "Please split into multiple submissions.\n\n"
+            "/cancel to abort",
+            parse_mode=None
+        )
+        return BULK_GMAIL
+    
+    # Parse and validate each line
+    valid_accounts = []
+    errors = []
+    
+    for idx, line in enumerate(lines, 1):
+        if '|' not in line:
+            errors.append(f"Line {idx}: Missing separator '|'")
+            continue
+        
+        parts = line.split('|', 1)
+        if len(parts) != 2:
+            errors.append(f"Line {idx}: Invalid format")
+            continue
+        
+        email = parts[0].strip()
+        password = parts[1].strip()
+        
+        # Validate email
+        is_valid, result = validate_email(email)
+        if not is_valid:
+            errors.append(f"Line {idx}: {result}")
+            continue
+        
+        email = result
+        
+        # Validate password
+        if not validate_password(password):
+            errors.append(f"Line {idx}: Password must be 6-100 characters")
+            continue
+        
+        # Check duplicate
+        duplicate = check_duplicate_email(email)
+        if duplicate:
+            errors.append(f"Line {idx}: Email already submitted")
+            continue
+        
+        valid_accounts.append((email, password))
+    
+    # If no valid accounts
+    if not valid_accounts:
+        error_text = "All submissions invalid\n\n" + "\n".join(errors[:10])
+        if len(errors) > 10:
+            error_text += f"\n\n...and {len(errors) - 10} more errors"
+        
+        await update.message.reply_text(
+            error_text + "\n\n/cancel to abort",
+            parse_mode=None
+        )
+        return BULK_GMAIL
+    
+    # Calculate reward
+    reward = calc_rate(uid)
+    
+    # Insert all valid accounts atomically
+    try:
+        inserted_ids = []
+        with get_db() as conn:
+            c = conn.cursor()
+            
+            for email, password in valid_accounts:
+                try:
+                    c.execute("""INSERT INTO gmail (user_id, email, password, reward, submit_date)
+                                 VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                              (uid, email, password, reward, datetime.now().isoformat()))
+                    gid = c.fetchone()['id']
+                    inserted_ids.append((gid, email))
+                except psycopg2.IntegrityError:
+                    # Skip duplicates that appeared during batch processing
+                    continue
+            
+            # Update total count
+            c.execute("UPDATE users SET total_gmail=total_gmail+%s WHERE user_id=%s", 
+                     (len(inserted_ids), uid))
+        
+        update_submit_time(uid)
+        context.user_data.clear()
+        
+        # Success message
+        success_text = f"Bulk submission successful\n\n"
+        success_text += f"Submitted: {len(inserted_ids)} accounts\n"
+        success_text += f"Reward per account: ₹{float(reward)}\n"
+        success_text += f"Total pending: ₹{float(reward) * len(inserted_ids):.2f}\n\n"
+        
+        if errors:
+            success_text += f"Skipped: {len(errors)} accounts\n"
+            if len(errors) <= 5:
+                success_text += "\nErrors:\n" + "\n".join(errors)
+        
+        success_text += "\n\nUnder review (24-48 hours)"
+        
+        kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        await update.message.reply_text(success_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+        
+        # Notify admin
+        try:
+            admin_text = f"Bulk Gmail Submission\n\n"
+            admin_text += f"User: {update.effective_user.first_name} (@{update.effective_user.username})\n"
+            admin_text += f"User ID: {uid}\n"
+            admin_text += f"Count: {len(inserted_ids)} accounts\n"
+            admin_text += f"Reward: ₹{float(reward)} each\n\n"
+            
+            # Show first 5 accounts
+            for idx, (gid, email) in enumerate(inserted_ids[:5], 1):
+                admin_text += f"{idx}. #{gid} - {email}\n"
+            
+            if len(inserted_ids) > 5:
+                admin_text += f"\n...and {len(inserted_ids) - 5} more"
+            
+            await context.bot.send_message(ADMIN_ID, admin_text, parse_mode=None)
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
+        
+        return ConversationHandler.END
+        
+    except Exception as e:
+        logger.error(f"Error in receive_bulk_gmail: {e}")
+        await update.message.reply_text(
+            "Error occurred during submission\n\n"
             "Please try again later.",
             parse_mode=None
         )
@@ -1812,8 +1996,8 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not validate_upi(upi_id):
         await update.message.reply_text(
-            "❌ **Invalid UPI ID!**\n\n"
-            "Format: name@bank\n"
+            "Invalid UPI ID\n\n"
+            "Format: name@bank\n\n"
             "/cancel to abort",
             parse_mode=None
         )
@@ -1826,8 +2010,8 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
         await update.message.reply_text(
-            f"✅ **UPI ID saved!**\n\n"
-            f"**UPI:** `{upi_id}`",
+            f"UPI ID saved\n\n"
+            f"UPI: {upi_id}",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
         )
@@ -1835,7 +2019,7 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in receive_upi: {e}")
         await update.message.reply_text(
-            "❌ **Error occurred!**\n\n"
+            "Error occurred\n\n"
             "Please try again later.",
             parse_mode=None
         )
@@ -1846,8 +2030,8 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not validate_usdt_address(addr):
         await update.message.reply_text(
-            "❌ **Invalid USDT address!**\n\n"
-            "Must be 34 characters, starting with 'T'\n"
+            "Invalid USDT address\n\n"
+            "Must be 34 characters, starting with 'T'\n\n"
             "/cancel to abort",
             parse_mode=None
         )
@@ -1860,8 +2044,8 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
         await update.message.reply_text(
-            f"✅ **USDT address saved!**\n\n"
-            f"**Address:** `{addr[:10]}...{addr[-10:]}`",
+            f"USDT address saved\n\n"
+            f"Address: {addr[:10]}...{addr[-10:]}",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
         )
@@ -1869,12 +2053,11 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in receive_usdt: {e}")
         await update.message.reply_text(
-            "❌ **Error occurred!**\n\n"
+            "Error occurred\n\n"
             "Please try again later.",
             parse_mode=None
         )
         return ConversationHandler.END
-# ==================== PART 9: WITHDRAWAL HANDLER, ERROR HANDLER AND MAIN ====================
 
 async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1882,7 +2065,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if amount < 100:
             await update.message.reply_text(
-                "❌ **Minimum withdrawal: ₹100**\n\n"
+                "Minimum withdrawal: ₹100\n\n"
                 "Enter valid amount or /cancel",
                 parse_mode=None
             )
@@ -1891,7 +2074,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         can_withdraw, remaining = can_withdraw_today(update.effective_user.id)
         if not can_withdraw:
             await update.message.reply_text(
-                f"❌ **Daily limit reached!**\n\n"
+                f"Daily limit reached\n\n"
                 f"You can make {MAX_WITHDRAWALS_PER_DAY} withdrawals per day.\n"
                 f"Try again tomorrow.",
                 parse_mode=None
@@ -1911,16 +2094,16 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 result = c.fetchone()
                 
                 if not result:
-                    await update.message.reply_text("❌ Error occurred")
+                    await update.message.reply_text("Error occurred")
                     return ConversationHandler.END
                 
                 balance = round_decimal(result['balance'])
                 
                 if amount > balance:
                     await update.message.reply_text(
-                        f"❌ **Insufficient balance!**\n\n"
-                        f"**Balance:** ₹{float(balance):.2f}\n"
-                        f"**Requested:** ₹{float(amount):.2f}",
+                        f"Insufficient balance\n\n"
+                        f"Balance: ₹{float(balance):.2f}\n"
+                        f"Requested: ₹{float(amount):.2f}",
                         parse_mode=None
                     )
                     return WITHDRAW_AMT
@@ -1928,7 +2111,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 payment_info = result['upi_id'] if method == 'upi' else result['usdt_address']
                 method_name = "UPI" if method == 'upi' else "USDT TRC20"
                 
-                # ATOMIC DEDUCTION - Deduct balance IMMEDIATELY
+                # ATOMIC DEDUCTION
                 c.execute("""
                     UPDATE users 
                     SET balance=balance-%s 
@@ -1940,7 +2123,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                 
                 if not updated:
                     await update.message.reply_text(
-                        "❌ **Insufficient balance!**\n\n"
+                        "Insufficient balance\n\n"
                         "Your balance may have changed. Please try again.",
                         parse_mode=None
                     )
@@ -1955,7 +2138,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error(f"Error in withdrawal transaction: {e}")
             await update.message.reply_text(
-                "❌ **Error occurred!**\n\n"
+                "Error occurred\n\n"
                 "Please try again later.",
                 parse_mode=None
             )
@@ -1965,13 +2148,13 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         
         kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
         await update.message.reply_text(
-            f"✅ **Withdrawal Requested!**\n\n"
-            f"**ID:** #{wid}\n"
-            f"**Amount:** ₹{float(amount):.2f}\n"
-            f"**Fee:** ₹{float(fee):.2f}\n"
-            f"**Final Amount:** ₹{float(final_amount):.2f}\n"
-            f"**Method:** {method_name}\n\n"
-            f"⏳ Processing within 24-48h",
+            f"Withdrawal requested\n\n"
+            f"ID: #{wid}\n"
+            f"Amount: ₹{float(amount):.2f}\n"
+            f"Fee: ₹{float(fee):.2f}\n"
+            f"Final amount: ₹{float(final_amount):.2f}\n"
+            f"Method: {method_name}\n\n"
+            f"Processing within 24-48 hours",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
         )
@@ -1979,14 +2162,14 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             await context.bot.send_message(
                 ADMIN_ID,
-                f"🆕 **Withdrawal Request**\n\n"
-                f"👤 {update.effective_user.first_name}\n"
-                f"🆔 `{update.effective_user.id}`\n\n"
-                f"💰 **Amount:** ₹{float(amount):.2f}\n"
-                f"💳 **Fee:** ₹{float(fee):.2f}\n"
-                f"💵 **Final:** ₹{float(final_amount):.2f}\n"
-                f"💳 **Method:** {method_name}\n"
-                f"📄 **Info:** `{payment_info}`",
+                f"New Withdrawal Request\n\n"
+                f"User: {update.effective_user.first_name}\n"
+                f"User ID: {update.effective_user.id}\n\n"
+                f"Amount: ₹{float(amount):.2f}\n"
+                f"Fee: ₹{float(fee):.2f}\n"
+                f"Final: ₹{float(final_amount):.2f}\n"
+                f"Method: {method_name}\n"
+                f"Payment info: {payment_info}",
                 parse_mode=None
             )
         except Exception as e:
@@ -1996,7 +2179,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
         
     except ValueError:
         await update.message.reply_text(
-            "❌ **Invalid amount!**\n\n"
+            "Invalid amount\n\n"
             "Enter a valid number or /cancel",
             parse_mode=None
         )
@@ -2004,7 +2187,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Error in receive_withdraw_amt: {e}")
         await update.message.reply_text(
-            "❌ **Error occurred!**\n\n"
+            "Error occurred\n\n"
             "Please try again later.",
             parse_mode=None
         )
@@ -2015,7 +2198,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     if not user_input.isdigit() or len(user_input) > 15:
         await update.message.reply_text(
-            "❌ **Invalid user ID format!**\n\n"
+            "Invalid user ID format\n\n"
             "Please enter a valid numeric user ID.",
             parse_mode=None
         )
@@ -2035,37 +2218,37 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
                 result['username'], result['first_name'], float(result['balance']), 
                 result['total_gmail'], result['approved_gmail'], result['is_blocked'], result['joined_date']
             )
-            status = "🔴 Blocked" if blocked else "🟢 Active"
+            status = "Blocked" if blocked else "Active"
             
-            text = f"""👤 **User Info**
+            text = f"""User Information
 
-🆔 `{uid}`
-👤 {name}
-📱 @{username or 'N/A'}
-📊 **Status:** {status}
+ID: {uid}
+Name: {name}
+Username: @{username or 'N/A'}
+Status: {status}
 
-💰 **Balance:** ₹{bal:.2f}
-📧 **Gmail:** {approved}/{total}
-📅 **Joined:** {joined[:10]}"""
+Balance: ₹{bal:.2f}
+Gmail: {approved}/{total}
+Joined: {joined[:10]}"""
             
             kb = [
-                [InlineKeyboardButton("🔴 Block" if not blocked else "🟢 Unblock", 
+                [InlineKeyboardButton("Block" if not blocked else "Unblock", 
                                      callback_data=f"block_{uid}")],
-                [InlineKeyboardButton("🔙", callback_data="admin")]
+                [InlineKeyboardButton("🔙 Back", callback_data="admin")]
             ]
             
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), 
                                            parse_mode=None)
         else:
-            await update.message.reply_text("❌ User not found")
+            await update.message.reply_text("User not found")
         
         return ConversationHandler.END
     except ValueError:
-        await update.message.reply_text("❌ Invalid ID format")
+        await update.message.reply_text("Invalid ID format")
         return USER_SEARCH
     except Exception as e:
         logger.error(f"Error in receive_user_search: {e}")
-        await update.message.reply_text("❌ Error occurred")
+        await update.message.reply_text("Error occurred")
         return ConversationHandler.END
 
 async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2081,7 +2264,7 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         failed = 0
         for row in users:
             try:
-                await context.bot.send_message(row['user_id'], f"📢 **Announcement**\n\n{msg}", parse_mode=None)
+                await context.bot.send_message(row['user_id'], f"Announcement\n\n{msg}", parse_mode=None)
                 sent += 1
             except Exception as e:
                 failed += 1
@@ -2091,10 +2274,10 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         kb = [[InlineKeyboardButton("🔙 Admin", callback_data="admin")]]
         await update.message.reply_text(
-            f"📢 **Broadcast Complete!**\n\n"
-            f"✅ Sent: {sent}\n"
-            f"❌ Failed: {failed}\n"
-            f"📊 Total: {len(users)} users",
+            f"Broadcast complete\n\n"
+            f"Sent: {sent}\n"
+            f"Failed: {failed}\n"
+            f"Total: {len(users)} users",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode=None
         )
@@ -2102,23 +2285,23 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     except Exception as e:
         logger.error(f"Error in receive_broadcast: {e}")
-        await update.message.reply_text("❌ Error occurred")
+        await update.message.reply_text("Error occurred")
         return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
-    await update.message.reply_text("❌ Cancelled", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("Cancelled", reply_markup=InlineKeyboardMarkup(kb))
     return ConversationHandler.END
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages (for Start button and other interactions)"""
+    """Handle text messages"""
     text = update.message.text.lower().strip()
     
     if text in ['start', 'menu', 'hi', 'hello', 'hey']:
         await start(update, context)
     else:
-        kb = [[InlineKeyboardButton("📱 Main Menu", callback_data="menu")]]
+        kb = [[InlineKeyboardButton("Main Menu", callback_data="menu")]]
         await update.message.reply_text(
             "Use the buttons below to navigate:",
             reply_markup=InlineKeyboardMarkup(kb)
@@ -2131,18 +2314,18 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     try:
         if update and hasattr(update, 'effective_user'):
             user_id = update.effective_user.id if update.effective_user else "Unknown"
-            error_msg = f"⚠️ **Error Report**\n\n" \
-                       f"**User ID:** `{user_id}`\n" \
-                       f"**Error:** `{str(context.error)[:200]}`"
+            error_msg = f"Error Report\n\n" \
+                       f"User ID: {user_id}\n" \
+                       f"Error: {str(context.error)[:200]}"
             
             await context.bot.send_message(ADMIN_ID, error_msg, parse_mode=None)
     except Exception as e:
         logger.error(f"Failed to send error notification: {e}")
 
 def main():
-    print("🚀 Starting bot...")
+    print("Starting bot...")
     print("=" * 50)
-    print("⚠️ Ensure only ONE Railway instance is running")
+    print("Ensure only ONE Railway instance is running")
 
     init_db()
 
@@ -2155,6 +2338,16 @@ def main():
         states={
             EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
             PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # BULK GMAIL CONVERSATION HANDLER
+    bulk_gmail_conv = ConversationHandler(
+        per_message=False,
+        entry_points=[CallbackQueryHandler(callback, pattern="^bulk_submit$")],
+        states={
+            BULK_GMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_gmail)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -2199,6 +2392,7 @@ def main():
     # Register handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(gmail_conv)
+    app.add_handler(bulk_gmail_conv)  # BULK GMAIL HANDLER ADDED
     app.add_handler(withdraw_conv)
     app.add_handler(usdt_conv)
     app.add_handler(upi_conv)
