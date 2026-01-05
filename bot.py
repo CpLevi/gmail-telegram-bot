@@ -1061,7 +1061,7 @@ Contact our support team:
             [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu")]
         ]
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (IDEMPOTENT) ====================
+# ==================== PART 6: ADMIN PANEL AND GMAIL APPROVAL (MODIFIED WITH PAGINATION) ====================
 
     # ADMIN PANEL
     elif d == "admin" and q.from_user.id == ADMIN_ID:
@@ -1106,34 +1106,52 @@ Contact our support team:
             for row in users_pending:
                 uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
                 text += f"👤 {name} (@{username or 'N/A'}) - {cnt}\n"
-                kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}")])
+                kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}_0")])
             kb.append([InlineKeyboardButton("🔙", callback_data="admin")])
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.edit_message_text("❌ No pending Gmail!",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙", callback_data="admin")]]))
     
-    # Individual Gmail Review
+    # Individual Gmail Review WITH PAGINATION
     elif d.startswith("user_gmail_"):
-        uid = int(d.split("_")[2])
+        parts = d.split("_")
+        uid = int(parts[2])
+        page = validate_page(parts[3]) if len(parts) > 3 else 0
+        
+        GMAIL_PER_PAGE = 5
+        offset = page * GMAIL_PER_PAGE
         
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT id, email, password, reward, submit_date, status
                         FROM gmail WHERE user_id=%s AND status='pending' 
-                        ORDER BY submit_date""", (uid,))
+                        ORDER BY submit_date ASC
+                        LIMIT %s OFFSET %s""", (uid, GMAIL_PER_PAGE, offset))
             gmails = c.fetchall()
+            
+            c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+            total_pending = c.fetchone().values().__iter__().__next__()
             
             c.execute("SELECT first_name, username FROM users WHERE user_id=%s", (uid,))
             user_info = c.fetchone()
         
-        if gmails and user_info:
+        if user_info:
             name, username = user_info['first_name'], user_info['username']
+            
+            if not gmails:
+                await q.answer("✅ All reviewed!", show_alert=True)
+                q.data = "gmail_queue"
+                await callback(update, context)
+                return
+            
+            total_pages = (total_pending + GMAIL_PER_PAGE - 1) // GMAIL_PER_PAGE
             
             text = f"""📧 **Gmail Review - {name}**
 
 👤 @{username or 'N/A'} (ID: `{uid}`)
-📊 **Total Pending:** {len(gmails)}
+📊 **Total Pending:** {total_pending}
+📄 **Page {page + 1} of {total_pages}**
 
 ━━━━━━━━━━━━━━━
 """
@@ -1148,28 +1166,47 @@ Contact our support team:
 ━━━━━━━━━━━━━━━
 """
             
-            kb = [
-                [InlineKeyboardButton("✅ Approve All", callback_data=f"approve_all_{uid}"),
-                 InlineKeyboardButton("❌ Reject All", callback_data=f"reject_all_{uid}")],
-                [InlineKeyboardButton("🔙 Back", callback_data="gmail_queue")]
-            ]
+            kb = []
             
-            for gmail in gmails[:5]:
+            # Batch action buttons (always visible)
+            kb.append([
+                InlineKeyboardButton("✅ Approve All", callback_data=f"approve_all_{uid}"),
+                InlineKeyboardButton("❌ Reject All", callback_data=f"reject_all_{uid}")
+            ])
+            
+            # Individual Gmail buttons (max 5 per page)
+            for gmail in gmails:
                 gid = gmail['id']
-                kb.insert(-1, [
-                    InlineKeyboardButton(f"✅ Approve #{gid}", callback_data=f"approve_{gid}"),
-                    InlineKeyboardButton(f"❌ Reject #{gid}", callback_data=f"reject_{gid}")
+                kb.append([
+                    InlineKeyboardButton(f"✅ Approve #{gid}", callback_data=f"approve_{gid}_{uid}_{page}"),
+                    InlineKeyboardButton(f"❌ Reject #{gid}", callback_data=f"reject_{gid}_{uid}_{page}")
                 ])
+            
+            # Pagination buttons
+            nav_buttons = []
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"user_gmail_{uid}_{page-1}"))
+            if (page + 1) * GMAIL_PER_PAGE < total_pending:
+                nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"user_gmail_{uid}_{page+1}"))
+            
+            if nav_buttons:
+                kb.append(nav_buttons)
+            
+            # Back button
+            kb.append([InlineKeyboardButton("🔙 Back", callback_data="gmail_queue")])
             
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
-            await q.answer("❌ No pending Gmail!", show_alert=True)
+            await q.answer("❌ User not found!", show_alert=True)
             q.data = "gmail_queue"
             await callback(update, context)
 
-    # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC
+    # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC (MODIFIED TO HANDLE PAGE)
     elif d.startswith("approve_") and not d.startswith("approve_all_"):
-        gid = int(d.split("_")[1])
+        parts = d.split("_")
+        gid = int(parts[1])
+        uid = int(parts[2]) if len(parts) > 2 else None
+        page = validate_page(parts[3]) if len(parts) > 3 else 0
         
         try:
             with get_db() as conn:
@@ -1189,7 +1226,8 @@ Contact our support team:
                     await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
-                uid, reward, email = result['user_id'], round_decimal(result['reward']), result['email']
+                uid_from_db, reward, email = result['user_id'], round_decimal(result['reward']), result['email']
+                uid = uid if uid else uid_from_db
                 
                 # Check if this is first approval
                 c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
@@ -1238,15 +1276,18 @@ Contact our support team:
                 
                 await q.answer(f"✅ Approved! ₹{float(reward):.2f} credited", show_alert=True)
                 
-                q.data = f'user_gmail_{uid}'
+                q.data = f'user_gmail_{uid}_{page}'
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error approving gmail {gid}: {e}")
             await q.answer("❌ Error occurred!", show_alert=True)
     
-    # REJECT SINGLE GMAIL - IDEMPOTENT
+    # REJECT SINGLE GMAIL - IDEMPOTENT (MODIFIED TO HANDLE PAGE)
     elif d.startswith("reject_") and not d.startswith("reject_all_"):
-        gid = int(d.split("_")[1])
+        parts = d.split("_")
+        gid = int(parts[1])
+        uid = int(parts[2]) if len(parts) > 2 else None
+        page = validate_page(parts[3]) if len(parts) > 3 else 0
         
         try:
             with get_db() as conn:
@@ -1266,7 +1307,8 @@ Contact our support team:
                     await q.answer("⚠️ Already processed!", show_alert=True)
                     return
                 
-                uid, email = result['user_id'], result['email']
+                uid_from_db, email = result['user_id'], result['email']
+                uid = uid if uid else uid_from_db
                 conn.commit()
                 
                 log_audit("reject_gmail", ADMIN_ID, uid, f"Gmail #{gid} - {email}")
@@ -1280,7 +1322,7 @@ Contact our support team:
                 
                 await q.answer("❌ Rejected", show_alert=True)
                 
-                q.data = f'user_gmail_{uid}'
+                q.data = f'user_gmail_{uid}_{page}'
                 await callback(update, context)
         except Exception as e:
             logger.error(f"Error rejecting gmail {gid}: {e}")
