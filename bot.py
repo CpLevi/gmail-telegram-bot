@@ -335,34 +335,86 @@ async def check_channel(user_id, context):
 
 def calc_rate(user_id):
     """
-    Calculate reward rate based on LAST 100 approved Gmail (rolling window)
+    Calculate reward rate based on LAST 7 DAYS of approved Gmail (rolling window)
     
     Slabs:
-    0–49   → ₹20
-    50–99  → ₹25
-    100    → ₹30
+    0–99   → ₹20
+    100–199 → ₹25
+    200+   → ₹30
     """
     with get_db() as conn:
         c = conn.cursor()
 
-        # Count approved Gmail in last 100 approvals
+        # Count approved Gmail in last 7 days
         c.execute("""
-            SELECT COUNT(*) FROM (
-                SELECT id FROM gmail
-                WHERE user_id = %s AND status = 'approved'
-                ORDER BY review_date DESC
-                LIMIT 100
-            ) AS last_100
+            SELECT COUNT(*) FROM gmail
+            WHERE user_id = %s 
+            AND status = 'approved'
+            AND review_date >= NOW() - INTERVAL '7 days'
         """, (user_id,))
 
-        approved_in_last_100 = list(c.fetchone().values())[0]
+        approved_last_7_days = list(c.fetchone().values())[0]
 
-    if approved_in_last_100 >= 100:
+    if approved_last_7_days >= 200:
         return Decimal("30")
-    elif approved_in_last_100 >= 50:
+    elif approved_last_7_days >= 100:
         return Decimal("25")
     else:
         return Decimal("20")
+
+def get_user_status_label(user_id):
+    """
+    Get user status label based on weekly activity
+    
+    Labels:
+    - Beginner: 0-49 approvals
+    - Regular: 50-99 approvals
+    - Trusted: 100-199 approvals
+    - Pro Contributor: 200+ approvals
+    """
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT COUNT(*) FROM gmail
+            WHERE user_id = %s 
+            AND status = 'approved'
+            AND review_date >= NOW() - INTERVAL '7 days'
+        """, (user_id,))
+        
+        weekly_approvals = list(c.fetchone().values())[0]
+    
+    if weekly_approvals >= 200:
+        return "Pro Contributor"
+    elif weekly_approvals >= 100:
+        return "Trusted"
+    elif weekly_approvals >= 50:
+        return "Regular"
+    else:
+        return "Beginner"
+
+def get_weekly_progress_message(user_id):
+    """
+    Get progress message showing how close user is to next tier
+    """
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT COUNT(*) FROM gmail
+            WHERE user_id = %s 
+            AND status = 'approved'
+            AND review_date >= NOW() - INTERVAL '7 days'
+        """, (user_id,))
+        
+        weekly_approvals = list(c.fetchone().values())[0]
+    
+    if weekly_approvals >= 200:
+        return f"Weekly progress: {weekly_approvals} approvals (Max tier achieved!)"
+    elif weekly_approvals >= 100:
+        remaining = 200 - weekly_approvals
+        return f"Weekly progress: {weekly_approvals} / 200\nYou are {remaining} approvals away from ₹30 tier"
+    else:
+        remaining = 100 - weekly_approvals
+        return f"Weekly progress: {weekly_approvals} / 100\nYou are {remaining} approvals away from ₹25 tier"
 
 def is_blocked(user_id):
     """Check if user is blocked"""
@@ -510,16 +562,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Earn money by submitting Gmail accounts.
 
-Rates per account:
-- 0-49 accounts: ₹20
-- 50-99 accounts: ₹25
-- 100+ accounts: ₹30
+Rates per account (based on last 7 days):
+- 0-99 approvals: ₹20
+- 100-199 approvals: ₹25
+- 200+ approvals: ₹30
 
 Bonus earnings:
 - Join channel: ₹1 (one-time)
 - Refer friends: ₹5 per person
 
 Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
+
+Note: Your rate updates automatically based on weekly activity. Stay active to maintain higher tiers!
 
 Join our channel: {TELEGRAM_CHANNEL}"""
     
@@ -664,18 +718,35 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
             pending = float(c.fetchone().values().__iter__().__next__() or 0)
+            
+            # Get weekly stats
+            c.execute("""
+                SELECT COUNT(*) FROM gmail
+                WHERE user_id = %s 
+                AND status = 'approved'
+                AND review_date >= NOW() - INTERVAL '7 days'
+            """, (q.from_user.id,))
+            weekly_approvals = list(c.fetchone().values())[0]
         
         bal, total, approved = (float(result['balance']), result['total_gmail'], result['approved_gmail']) if result else (0,0,0)
         rate = float(calc_rate(q.from_user.id))
+        status_label = get_user_status_label(q.from_user.id)
+        progress_msg = get_weekly_progress_message(q.from_user.id)
         
         text = f"""Balance: ₹{bal:.2f}
 
+Status: {status_label}
 Current rate: ₹{rate} per account
+{progress_msg}
+
 Pending verification: ₹{pending:.2f}
 
 Statistics:
-Approved: {approved}
-Total submitted: {total}"""
+Approved (all time): {approved}
+Total submitted: {total}
+This week: {weekly_approvals} approvals
+
+Note: Rates are based on your last 7 days of activity"""
         
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="menu")]
@@ -984,7 +1055,7 @@ Share this link with friends to start earning."""
                                   parse_mode=None)
         return USDT_ADDRESS
     
-    # PROFILE
+   # PROFILE
     elif d == "profile":
         with get_db() as conn:
             c = conn.cursor()
@@ -994,23 +1065,38 @@ Share this link with friends to start earning."""
             
             c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
             ref_count = list(c.fetchone().values())[0]
+            
+            # Get weekly stats
+            c.execute("""
+                SELECT COUNT(*) FROM gmail
+                WHERE user_id = %s 
+                AND status = 'approved'
+                AND review_date >= NOW() - INTERVAL '7 days'
+            """, (q.from_user.id,))
+            weekly_approvals = list(c.fetchone().values())[0]
         
         if result:
             bal, approved, usdt, upi, joined = float(result['balance']), result['approved_gmail'], result['usdt_address'], result['upi_id'], result['joined_date']
             rate = float(calc_rate(q.from_user.id))
+            status_label = get_user_status_label(q.from_user.id)
             
             text = f"""Profile
 
+Status: {status_label}
 Balance: ₹{bal:.2f}
 Current rate: ₹{rate} per account
-Approved submissions: {approved}
+
+Approved submissions (all time): {approved}
+This week: {weekly_approvals} approvals
 Successful referrals: {ref_count}
 
 Payment methods:
 UPI: {"✅ Setup" if upi else "❌ Not setup"}
 USDT: {"✅ Setup" if usdt else "❌ Not setup"}
 
-Joined: {joined[:10]}"""
+Joined: {joined[:10]}
+
+Note: Your rate is based on last 7 days activity"""
             
             kb = [
                 [InlineKeyboardButton("⚙️ Payment Methods", callback_data="setup_payment")],
