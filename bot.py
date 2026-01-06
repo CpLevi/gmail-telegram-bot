@@ -350,7 +350,7 @@ def calc_rate(user_id):
             SELECT COUNT(*) FROM gmail
             WHERE user_id = %s 
             AND status = 'approved'
-            AND review_date >= NOW() - INTERVAL '7 days'
+            AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
         """, (user_id,))
 
         approved_last_7_days = list(c.fetchone().values())[0]
@@ -378,7 +378,7 @@ def get_user_status_label(user_id):
             SELECT COUNT(*) FROM gmail
             WHERE user_id = %s 
             AND status = 'approved'
-            AND review_date >= NOW() - INTERVAL '7 days'
+            AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
         """, (user_id,))
         
         weekly_approvals = list(c.fetchone().values())[0]
@@ -402,7 +402,7 @@ def get_weekly_progress_message(user_id):
             SELECT COUNT(*) FROM gmail
             WHERE user_id = %s 
             AND status = 'approved'
-            AND review_date >= NOW() - INTERVAL '7 days'
+            AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
         """, (user_id,))
         
         weekly_approvals = list(c.fetchone().values())[0]
@@ -724,7 +724,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 SELECT COUNT(*) FROM gmail
                 WHERE user_id = %s 
                 AND status = 'approved'
-                AND review_date >= NOW() - INTERVAL '7 days'
+                AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
             """, (q.from_user.id,))
             weekly_approvals = list(c.fetchone().values())[0]
         
@@ -1071,7 +1071,7 @@ Share this link with friends to start earning."""
                 SELECT COUNT(*) FROM gmail
                 WHERE user_id = %s 
                 AND status = 'approved'
-                AND review_date >= NOW() - INTERVAL '7 days'
+                AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
             """, (q.from_user.id,))
             weekly_approvals = list(c.fetchone().values())[0]
         
