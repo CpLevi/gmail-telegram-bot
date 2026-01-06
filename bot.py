@@ -44,6 +44,11 @@ MAX_PENDING_WITHDRAWALS = 2
 SUBMIT_COOLDOWN = 20  # seconds
 MAX_PAGINATION_PAGE = 50
 
+# Admin pagination settings
+ADMIN_USERS_PER_PAGE = 10
+ADMIN_GMAIL_PER_PAGE = 10  # Increased from 5
+ADMIN_WITHDRAWALS_PER_PAGE = 5
+
 EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH, BULK_GMAIL = range(8)
 
 @contextmanager
@@ -1134,43 +1139,65 @@ Pending withdrawals: {pw}"""
         await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
     
     # GMAIL QUEUE
-    elif d == "gmail_queue" and q.from_user.id == ADMIN_ID:
+    # GMAIL QUEUE WITH PAGINATION
+    elif d == "gmail_queue" or d.startswith("gmail_queue_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        page = validate_page(d.split("_")[-1]) if "_" in d else 0
+        offset = page * ADMIN_USERS_PER_PAGE
+        
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT DISTINCT u.user_id, u.first_name, u.username, COUNT(g.id) as cnt
                          FROM gmail g JOIN users u ON g.user_id = u.user_id
                          WHERE g.status='pending'
-                         GROUP BY u.user_id, u.first_name, u.username ORDER BY cnt DESC LIMIT 10""")
+                         GROUP BY u.user_id, u.first_name, u.username 
+                         ORDER BY cnt DESC 
+                         LIMIT %s OFFSET %s""", (ADMIN_USERS_PER_PAGE, offset))
             users_pending = c.fetchall()
+            
+            c.execute("""SELECT COUNT(DISTINCT user_id) 
+                         FROM gmail WHERE status='pending'""")
+            total_users = c.fetchone().values().__iter__().__next__()
         
         if users_pending:
-            text = "Gmail Queue\n\n"
+            total_pages = (total_users + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE
+            text = f"Gmail Queue (Page {page + 1} of {total_pages})\n\n"
             kb = []
             for row in users_pending:
                 uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
                 text += f"{name} (@{username or 'N/A'}) - {cnt} pending\n"
                 kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}_0")])
+            
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"gmail_queue_{page-1}"))
+            if offset + ADMIN_USERS_PER_PAGE < total_users:
+                nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"gmail_queue_{page+1}"))
+            if nav:
+                kb.append(nav)
+            
             kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.edit_message_text("No pending Gmail submissions",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
     
-    # Individual Gmail Review WITH PAGINATION
+    # Individual Gmail Review WITH PAGINATION (10 per page)
     elif d.startswith("user_gmail_"):
         parts = d.split("_")
         uid = int(parts[2])
         page = validate_page(parts[3]) if len(parts) > 3 else 0
         
-        GMAIL_PER_PAGE = 5
-        offset = page * GMAIL_PER_PAGE
+        offset = page * ADMIN_GMAIL_PER_PAGE
         
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT id, email, password, reward, submit_date, status
                         FROM gmail WHERE user_id=%s AND status='pending' 
                         ORDER BY submit_date ASC
-                        LIMIT %s OFFSET %s""", (uid, GMAIL_PER_PAGE, offset))
+                        LIMIT %s OFFSET %s""", (uid, ADMIN_GMAIL_PER_PAGE, offset))
             gmails = c.fetchall()
             
             c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
@@ -1184,11 +1211,11 @@ Pending withdrawals: {pw}"""
             
             if not gmails:
                 await q.answer("All reviewed", show_alert=True)
-                q.data = "gmail_queue"
+                q.data = "gmail_queue_0"
                 await callback(update, context)
                 return
             
-            total_pages = (total_pending + GMAIL_PER_PAGE - 1) // GMAIL_PER_PAGE
+            total_pages = (total_pending + ADMIN_GMAIL_PER_PAGE - 1) // ADMIN_GMAIL_PER_PAGE
             
             text = f"""Gmail Review - {name}
 
@@ -1227,19 +1254,19 @@ Page {page + 1} of {total_pages}
             nav_buttons = []
             if page > 0:
                 nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"user_gmail_{uid}_{page-1}"))
-            if (page + 1) * GMAIL_PER_PAGE < total_pending:
+            if (page + 1) * ADMIN_GMAIL_PER_PAGE < total_pending:
                 nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"user_gmail_{uid}_{page+1}"))
             
             if nav_buttons:
                 kb.append(nav_buttons)
             
             # Back button
-            kb.append([InlineKeyboardButton("🔙 Back", callback_data="gmail_queue")])
+            kb.append([InlineKeyboardButton("🔙 Back", callback_data="gmail_queue_0")])
             
             await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         else:
             await q.answer("User not found", show_alert=True)
-            q.data = "gmail_queue"
+            q.data = "gmail_queue_0"
             await callback(update, context)
 
     # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC
@@ -1451,7 +1478,7 @@ Page {page + 1} of {total_pages}
                     f"Gmail approved: {count}\n"
                     f"Total amount: ₹{float(total_reward):.2f}\n\n"
                     f"User has been notified",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]]),
                     parse_mode=None
                 )
         except Exception as e:
@@ -1501,29 +1528,42 @@ Page {page + 1} of {total_pages}
                     f"Gmail rejected: {count}\n"
                     f"Reason: Quality issues\n\n"
                     f"User has been notified",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue")]]),
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]]),
                     parse_mode=None
                 )
         except Exception as e:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
             await q.answer("Error occurred", show_alert=True)
     
-    # WITHDRAWAL QUEUE
-    elif d == "withdrawal_queue" and q.from_user.id == ADMIN_ID:
+    # WITHDRAWAL QUEUE WITH PAGINATION
+    elif d == "withdrawal_queue" or d.startswith("withdrawal_queue_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        page = validate_page(d.split("_")[-1]) if "_" in d else 0
+        offset = page * ADMIN_WITHDRAWALS_PER_PAGE
+        
         with get_db() as conn:
             c = conn.cursor()
             c.execute("""SELECT w.id, w.amount, w.fee, w.final_amount, w.method, w.payment_info, w.request_date,
                          u.first_name, u.username, u.user_id
                          FROM withdrawals w JOIN users u ON w.user_id = u.user_id
                          WHERE w.status='pending'
-                         ORDER BY w.request_date LIMIT 1""")
-            sub = c.fetchone()
-        
-        if sub:
-            wid, amount, fee, final_amount, method, info, date = sub['id'], float(sub['amount']), float(sub['fee']), float(sub['final_amount']), sub['method'], sub['payment_info'], sub['request_date']
-            name, username, uid = sub['first_name'], sub['username'], sub['user_id']
+                         ORDER BY w.request_date 
+                         LIMIT %s OFFSET %s""", (ADMIN_WITHDRAWALS_PER_PAGE, offset))
+            withdrawals = c.fetchall()
             
-            text = f"""Withdrawal #{wid}
+            c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
+            total_pending = c.fetchone().values().__iter__().__next__()
+        
+        if withdrawals:
+            total_pages = (total_pending + ADMIN_WITHDRAWALS_PER_PAGE - 1) // ADMIN_WITHDRAWALS_PER_PAGE
+            
+            for idx, sub in enumerate(withdrawals):
+                wid, amount, fee, final_amount, method, info, date = sub['id'], float(sub['amount']), float(sub['fee']), float(sub['final_amount']), sub['method'], sub['payment_info'], sub['request_date']
+                name, username, uid = sub['first_name'], sub['username'], sub['user_id']
+                
+                text = f"""Withdrawal #{wid} (Page {page + 1} of {total_pages})
 
 User: {name} (@{username or 'N/A'})
 Amount: ₹{amount:.2f}
@@ -1531,15 +1571,27 @@ Fee: ₹{fee:.2f}
 Final amount: ₹{final_amount:.2f}
 Method: {method.upper()}
 Payment info: {info}
-Date: {date[:16]}"""
-            
-            kb = [
-                [InlineKeyboardButton("✅ Approve", callback_data=f"aw_{wid}"),
-                 InlineKeyboardButton("❌ Reject", callback_data=f"rw_{wid}")],
-                [InlineKeyboardButton("➡️ Next", callback_data="withdrawal_queue"),
-                 InlineKeyboardButton("🔙 Back", callback_data="admin")]
-            ]
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+Date: {date[:16]}
+
+Showing {offset + idx + 1} of {total_pending}"""
+                
+                kb = [
+                    [InlineKeyboardButton("✅ Approve", callback_data=f"aw_{wid}"),
+                     InlineKeyboardButton("❌ Reject", callback_data=f"rw_{wid}")]
+                ]
+                
+                nav = []
+                if page > 0:
+                    nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"withdrawal_queue_{page-1}"))
+                if offset + ADMIN_WITHDRAWALS_PER_PAGE < total_pending:
+                    nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"withdrawal_queue_{page+1}"))
+                if nav:
+                    kb.append(nav)
+                
+                kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
+                
+                await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+                break
         else:
             await q.edit_message_text("No pending withdrawals",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
