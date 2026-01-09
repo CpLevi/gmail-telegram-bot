@@ -1898,41 +1898,6 @@ Fees collected: ₹{fees_collected:.2f}"""
             await q.answer("Error occurred", show_alert=True)
 
 # WALLET ADD/DEDUCT - START
-    elif d.startswith("wallet_add_") or d.startswith("wallet_deduct_"):
-        if q.from_user.id != ADMIN_ID:
-            return
-        
-        parts = d.split("_")
-        action = parts[1]  # "add" or "deduct"
-        uid = int(parts[2])
-        
-        # Verify user exists
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("SELECT first_name, balance FROM users WHERE user_id=%s", (uid,))
-            result = c.fetchone()
-        
-        if not result:
-            await q.answer("User not found", show_alert=True)
-            return
-        
-        # Store in context
-        context.user_data['wallet_action'] = action
-        context.user_data['wallet_target_user'] = uid
-        context.user_data['wallet_target_name'] = result['first_name']
-        context.user_data['wallet_current_balance'] = float(result['balance'])
-        
-        action_text = "ADD" if action == "add" else "DEDUCT"
-        
-        await q.message.reply_text(
-    f"Balance {action_text}\n\n"
-    f"User: {result['first_name']} (ID: {uid})\n"
-    f"Current balance: ₹{float(result['balance']):.2f}\n\n"
-    f"Enter amount (₹):\n\n"
-    f"/cancel to abort",
-    parse_mode=None
-)
-        return WALLET_AMOUNT
     
     # WALLET CONFIRM
     elif d.startswith("wallet_confirm_"):
@@ -2086,6 +2051,49 @@ Fees collected: ₹{fees_collected:.2f}"""
     ])
 )
         return
+
+async def start_wallet_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point for wallet add/deduct operations"""
+    q = update.callback_query
+    await q.answer()
+    
+    if q.from_user.id != ADMIN_ID:
+        await q.answer("Unauthorized", show_alert=True)
+        return ConversationHandler.END
+    
+    d = q.data
+    parts = d.split("_")
+    action = parts[1]  # "add" or "deduct"
+    uid = int(parts[2])
+    
+    # Verify user exists
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT first_name, balance FROM users WHERE user_id=%s", (uid,))
+        result = c.fetchone()
+    
+    if not result:
+        await q.answer("User not found", show_alert=True)
+        return ConversationHandler.END
+    
+    # Store in context
+    context.user_data['wallet_action'] = action
+    context.user_data['wallet_target_user'] = uid
+    context.user_data['wallet_target_name'] = result['first_name']
+    context.user_data['wallet_current_balance'] = float(result['balance'])
+    
+    action_text = "ADD" if action == "add" else "DEDUCT"
+    
+    await q.message.reply_text(
+        f"Balance {action_text}\n\n"
+        f"User: {result['first_name']} (ID: {uid})\n"
+        f"Current balance: ₹{float(result['balance']):.2f}\n\n"
+        f"Enter amount (₹):\n\n"
+        f"/cancel to abort",
+        parse_mode=None
+    )
+    
+    return WALLET_AMOUNT
 
 # ==================== MESSAGE HANDLERS ====================
 
@@ -2894,25 +2902,36 @@ def main():
 
     wallet_conv = ConversationHandler(
         per_message=False,
-        entry_points=[CallbackQueryHandler(callback, pattern="^wallet_(add|deduct)_")],
+        entry_points=[
+            CallbackQueryHandler(start_wallet_operation, pattern="^wallet_(add|deduct)_[0-9]+$")
+        ],
         states={
             WALLET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet_amount)],
             WALLET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet_reason)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=False
     )
-
-    # Register handlers
+    # Register handlers - ORDER MATTERS
     app.add_handler(CommandHandler("start", start))
+    
+    # Conversation handlers MUST come before generic callback handler
     app.add_handler(gmail_conv)
-    app.add_handler(bulk_gmail_conv)  # BULK GMAIL HANDLER ADDED
+    app.add_handler(bulk_gmail_conv)
     app.add_handler(withdraw_conv)
     app.add_handler(usdt_conv)
     app.add_handler(upi_conv)
     app.add_handler(user_conv)
     app.add_handler(broadcast_conv)
+    app.add_handler(wallet_conv)  # MUST be before generic CallbackQueryHandler
+    
+    # Generic callback handler comes AFTER all ConversationHandlers
     app.add_handler(CallbackQueryHandler(callback), group=1)
+    
+    # Text handler comes last
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+    
+    # Error handler
     app.add_error_handler(error_handler)
 
     print("✅ Bot is running (polling)...")
