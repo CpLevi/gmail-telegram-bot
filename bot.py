@@ -1918,8 +1918,12 @@ Fees collected: ₹{fees_collected:.2f}"""
         if not all([action, amount, reason, balance_before is not None]):
             await q.answer("Session expired. Please start again.", show_alert=True)
             context.user_data.clear()
-            q.data = "admin"
-            await callback(update, context)
+            await q.message.reply_text(
+    "Action completed. Use the menu below:",
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]
+    ])
+)
             return
         
         amount = round_decimal(amount)
@@ -1933,8 +1937,12 @@ Fees collected: ₹{fees_collected:.2f}"""
             if balance_after < 0:
                 await q.answer("Insufficient balance", show_alert=True)
                 context.user_data.clear()
-                q.data = "admin"
-                await callback(update, context)
+                await q.message.reply_text(
+    "Action completed. Use the menu below:",
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]
+    ])
+)
                 return
         
         balance_after = round_decimal(balance_after)
@@ -1964,8 +1972,12 @@ Fees collected: ₹{fees_collected:.2f}"""
                 if not result:
                     await q.answer("Update failed. Balance may have changed.", show_alert=True)
                     context.user_data.clear()
-                    q.data = "admin"
-                    await callback(update, context)
+                    await q.message.reply_text(
+    "Action completed. Use the menu below:",
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]
+    ])
+)
                     return
                 
                 final_balance = float(result['balance'])
@@ -2008,8 +2020,8 @@ Fees collected: ₹{fees_collected:.2f}"""
                 # Notify admin
                 await q.answer("Balance updated successfully", show_alert=True)
                 
-                await q.edit_message_text(
-                    f"Balance Update Complete\n\n"
+                await q.message.reply_text(
+                    f"✅ Balance Update Complete\n\n"
                     f"User ID: {uid}\n"
                     f"Action: {action.upper()}\n"
                     f"Amount: ₹{float(amount):.2f}\n"
@@ -2022,7 +2034,7 @@ Fees collected: ₹{fees_collected:.2f}"""
                     ]),
                     parse_mode=None
                 )
-                
+
                 context.user_data.clear()
                 
         except Exception as e:
@@ -2034,8 +2046,12 @@ Fees collected: ₹{fees_collected:.2f}"""
     elif d == "wallet_cancel":
         context.user_data.clear()
         await q.answer("Cancelled", show_alert=True)
-        q.data = "admin"
-        await callback(update, context)
+        await q.message.reply_text(
+    "Action completed. Use the menu below:",
+    reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]
+    ])
+)
         return
 
 # ==================== MESSAGE HANDLERS ====================
