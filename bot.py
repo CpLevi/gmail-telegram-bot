@@ -1891,14 +1891,14 @@ Fees collected: ₹{fees_collected:.2f}"""
         
         action_text = "ADD" if action == "add" else "DEDUCT"
         
-        await q.edit_message_text(
-            f"Balance {action_text}\n\n"
-            f"User: {result['first_name']} (ID: {uid})\n"
-            f"Current balance: ₹{float(result['balance']):.2f}\n\n"
-            f"Enter amount (₹):\n\n"
-            f"/cancel to abort",
-            parse_mode=None
-        )
+        await q.message.reply_text(
+    f"Balance {action_text}\n\n"
+    f"User: {result['first_name']} (ID: {uid})\n"
+    f"Current balance: ₹{float(result['balance']):.2f}\n\n"
+    f"Enter amount (₹):\n\n"
+    f"/cancel to abort",
+    parse_mode=None
+)
         return WALLET_AMOUNT
     
     # WALLET CONFIRM
