@@ -602,6 +602,30 @@ Join our channel: {TELEGRAM_CHANNEL}"""
         kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1", callback_data="claim_channel")])
     
     await message_to_use.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+async def safe_edit_or_reply(q, text, reply_markup=None):
+    """
+    Safely edits a message if possible, otherwise sends a new reply.
+    Prevents 'Message is not modified' errors.
+    """
+    try:
+        if q.message and q.message.text != text:
+            await q.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=None
+            )
+        else:
+            await q.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=None
+            )
+    except Exception:
+        await q.message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=None
+        )
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -1240,7 +1264,7 @@ Pending withdrawals: {pw}"""
             [InlineKeyboardButton("📊 Statistics", callback_data="stats"),
              InlineKeyboardButton("🔙 Back", callback_data="menu")]
         ]
-        await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
     
     # GMAIL QUEUE
     # GMAIL QUEUE WITH PAGINATION
@@ -1283,7 +1307,7 @@ Pending withdrawals: {pw}"""
                 kb.append(nav)
             
             kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+            await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
         else:
             await q.edit_message_text("No pending Gmail submissions",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
@@ -1367,7 +1391,7 @@ Page {page + 1} of {total_pages}
             # Back button
             kb.append([InlineKeyboardButton("🔙 Back", callback_data="gmail_queue_0")])
             
-            await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+            await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
         else:
             await q.answer("User not found", show_alert=True)
             q.data = "gmail_queue_0"
@@ -1576,15 +1600,17 @@ Page {page + 1} of {total_pages}
                 
                 await q.answer(f"{count} approved - ₹{float(total_reward):.2f} credited", show_alert=True)
                 
-                await q.edit_message_text(
+                await safe_edit_or_reply(
+    q,
                     f"Batch approved\n\n"
                     f"User ID: {uid}\n"
                     f"Gmail approved: {count}\n"
                     f"Total amount: ₹{float(total_reward):.2f}\n\n"
                     f"User has been notified",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]]),
-                    parse_mode=None
-                )
+                    reply_markup=InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]
+])
+)
         except Exception as e:
             logger.error(f"Error approving all gmails for user {uid}: {e}")
             await q.answer("Error occurred", show_alert=True)
@@ -1626,15 +1652,17 @@ Page {page + 1} of {total_pages}
                 
                 await q.answer(f"{count} rejected", show_alert=True)
                 
-                await q.edit_message_text(
+                await safe_edit_or_reply(
+    q,
                     f"Batch rejected\n\n"
                     f"User ID: {uid}\n"
                     f"Gmail rejected: {count}\n"
                     f"Reason: Quality issues\n\n"
                     f"User has been notified",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]]),
-                    parse_mode=None
-                )
+                    reply_markup=InlineKeyboardMarkup([
+    [InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")]
+])
+)
         except Exception as e:
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
             await q.answer("Error occurred", show_alert=True)
@@ -1694,11 +1722,16 @@ Showing {offset + idx + 1} of {total_pending}"""
                 
                 kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
                 
-                await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+                await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
                 break
         else:
-            await q.edit_message_text("No pending withdrawals",
-                                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
+            await safe_edit_or_reply(
+    q,
+    "No pending withdrawal requests",
+    InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back", callback_data="admin")]
+    ])
+)
     
     # APPROVE WITHDRAWAL - IDEMPOTENT
     elif d.startswith("aw_"):
