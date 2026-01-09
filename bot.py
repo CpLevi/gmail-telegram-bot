@@ -49,7 +49,7 @@ ADMIN_USERS_PER_PAGE = 10
 ADMIN_GMAIL_PER_PAGE = 10  # Increased from 5
 ADMIN_WITHDRAWALS_PER_PAGE = 5
 
-EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH, BULK_GMAIL = range(8)
+EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH, BULK_GMAIL, WALLET_AMOUNT, WALLET_REASON = range(10)
 
 @contextmanager
 def get_db():
@@ -136,7 +136,18 @@ def init_db():
             details TEXT,
             timestamp TEXT
         )''')
-        
+        # Admin wallet logs table
+        c.execute('''CREATE TABLE IF NOT EXISTS admin_wallet_logs (
+            id SERIAL PRIMARY KEY,
+            admin_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            action TEXT NOT NULL,
+            amount DECIMAL(10,2) NOT NULL,
+            reason TEXT NOT NULL,
+            balance_before DECIMAL(10,2) NOT NULL,
+            balance_after DECIMAL(10,2) NOT NULL,
+            timestamp TEXT NOT NULL
+        )''')
         # Add missing columns
         columns_to_add = [
             ("users", "notifications_enabled", "INTEGER DEFAULT 1"),
@@ -1853,6 +1864,180 @@ Fees collected: ₹{fees_collected:.2f}"""
             logger.error(f"Error blocking/unblocking user {uid}: {e}")
             await q.answer("Error occurred", show_alert=True)
 
+# WALLET ADD/DEDUCT - START
+    elif d.startswith("wallet_add_") or d.startswith("wallet_deduct_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        action = parts[1]  # "add" or "deduct"
+        uid = int(parts[2])
+        
+        # Verify user exists
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("SELECT first_name, balance FROM users WHERE user_id=%s", (uid,))
+            result = c.fetchone()
+        
+        if not result:
+            await q.answer("User not found", show_alert=True)
+            return
+        
+        # Store in context
+        context.user_data['wallet_action'] = action
+        context.user_data['wallet_target_user'] = uid
+        context.user_data['wallet_target_name'] = result['first_name']
+        context.user_data['wallet_current_balance'] = float(result['balance'])
+        
+        action_text = "ADD" if action == "add" else "DEDUCT"
+        
+        await q.edit_message_text(
+            f"Balance {action_text}\n\n"
+            f"User: {result['first_name']} (ID: {uid})\n"
+            f"Current balance: ₹{float(result['balance']):.2f}\n\n"
+            f"Enter amount (₹):\n\n"
+            f"/cancel to abort",
+            parse_mode=None
+        )
+        return WALLET_AMOUNT
+    
+    # WALLET CONFIRM
+    elif d.startswith("wallet_confirm_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        uid = int(parts[2])
+        
+        # Get stored data
+        action = context.user_data.get('wallet_action')
+        amount = context.user_data.get('wallet_amount')
+        reason = context.user_data.get('wallet_reason')
+        balance_before = context.user_data.get('wallet_current_balance')
+        
+        if not all([action, amount, reason, balance_before is not None]):
+            await q.answer("Session expired. Please start again.", show_alert=True)
+            context.user_data.clear()
+            q.data = "admin"
+            await callback(update, context)
+            return
+        
+        amount = round_decimal(amount)
+        balance_before = round_decimal(balance_before)
+        
+        # Calculate new balance
+        if action == "add":
+            balance_after = balance_before + amount
+        else:  # deduct
+            balance_after = balance_before - amount
+            if balance_after < 0:
+                await q.answer("Insufficient balance", show_alert=True)
+                context.user_data.clear()
+                q.data = "admin"
+                await callback(update, context)
+                return
+        
+        balance_after = round_decimal(balance_after)
+        
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                
+                # ATOMIC UPDATE
+                if action == "add":
+                    c.execute("""
+                        UPDATE users 
+                        SET balance = balance + %s
+                        WHERE user_id = %s
+                        RETURNING balance
+                    """, (amount, uid))
+                else:  # deduct
+                    c.execute("""
+                        UPDATE users 
+                        SET balance = balance - %s
+                        WHERE user_id = %s AND balance >= %s
+                        RETURNING balance
+                    """, (amount, uid, amount))
+                
+                result = c.fetchone()
+                
+                if not result:
+                    await q.answer("Update failed. Balance may have changed.", show_alert=True)
+                    context.user_data.clear()
+                    q.data = "admin"
+                    await callback(update, context)
+                    return
+                
+                final_balance = float(result['balance'])
+                
+                # Log to admin_wallet_logs
+                c.execute("""
+                    INSERT INTO admin_wallet_logs 
+                    (admin_id, user_id, action, amount, reason, balance_before, balance_after, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    ADMIN_ID,
+                    uid,
+                    action.upper(),
+                    amount,
+                    reason,
+                    balance_before,
+                    balance_after,
+                    datetime.now().isoformat()
+                ))
+                
+                conn.commit()
+                
+                # Log to regular audit
+                log_audit(
+                    f"wallet_{action}",
+                    ADMIN_ID,
+                    uid,
+                    f"Amount: ₹{float(amount):.2f} | Reason: {reason}"
+                )
+                
+                # Notify user
+                action_word = "added to" if action == "add" else "deducted from"
+                await notify_user(
+                    context,
+                    uid,
+                    f"₹{float(amount):.2f} has been {action_word} your wallet.\n"
+                    f"Reason: {reason}"
+                )
+                
+                # Notify admin
+                await q.answer("Balance updated successfully", show_alert=True)
+                
+                await q.edit_message_text(
+                    f"Balance Update Complete\n\n"
+                    f"User ID: {uid}\n"
+                    f"Action: {action.upper()}\n"
+                    f"Amount: ₹{float(amount):.2f}\n"
+                    f"Balance before: ₹{float(balance_before):.2f}\n"
+                    f"Balance after: ₹{final_balance:.2f}\n"
+                    f"Reason: {reason}\n\n"
+                    f"User has been notified.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Admin Panel", callback_data="admin")]
+                    ]),
+                    parse_mode=None
+                )
+                
+                context.user_data.clear()
+                
+        except Exception as e:
+            logger.error(f"Error in wallet update: {e}")
+            await q.answer("Error occurred", show_alert=True)
+            context.user_data.clear()
+    
+    # WALLET CANCEL
+    elif d == "wallet_cancel":
+        context.user_data.clear()
+        await q.answer("Cancelled", show_alert=True)
+        q.data = "admin"
+        await callback(update, context)
+        return
+
 # ==================== MESSAGE HANDLERS ====================
 
 async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2338,7 +2523,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=None
         )
         return ConversationHandler.END
-
+    
 async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     
@@ -2378,6 +2563,8 @@ Gmail: {approved}/{total}
 Joined: {joined[:10]}"""
             
             kb = [
+                [InlineKeyboardButton("➕ Add Balance", callback_data=f"wallet_add_{uid}"),
+                 InlineKeyboardButton("➖ Deduct Balance", callback_data=f"wallet_deduct_{uid}")],
                 [InlineKeyboardButton("Block" if not blocked else "Unblock", 
                                      callback_data=f"block_{uid}")],
                 [InlineKeyboardButton("🔙 Back", callback_data="admin")]
@@ -2433,6 +2620,127 @@ async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in receive_broadcast: {e}")
         await update.message.reply_text("Error occurred")
         return ConversationHandler.END
+
+async def receive_wallet_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive amount for wallet add/deduct"""
+    amount_text = update.message.text.strip()
+    
+    try:
+        amount = Decimal(amount_text)
+        
+        # Validate amount
+        if amount <= 0:
+            await update.message.reply_text(
+                "Invalid amount\n\n"
+                "Amount must be greater than 0.\n\n"
+                "Enter a valid amount or /cancel",
+                parse_mode=None
+            )
+            return WALLET_AMOUNT
+        
+        # Max 2 decimals
+        if amount.as_tuple().exponent < -2:
+            await update.message.reply_text(
+                "Invalid amount\n\n"
+                "Maximum 2 decimal places allowed.\n\n"
+                "Enter a valid amount or /cancel",
+                parse_mode=None
+            )
+            return WALLET_AMOUNT
+        
+        # Check deduction limit
+        action = context.user_data.get('wallet_action')
+        current_balance = context.user_data.get('wallet_current_balance', 0)
+        
+        if action == 'deduct' and amount > Decimal(str(current_balance)):
+            await update.message.reply_text(
+                f"Invalid amount\n\n"
+                f"Cannot deduct ₹{float(amount):.2f}\n"
+                f"User balance: ₹{current_balance:.2f}\n\n"
+                f"Enter a valid amount or /cancel",
+                parse_mode=None
+            )
+            return WALLET_AMOUNT
+        
+        # Store amount
+        context.user_data['wallet_amount'] = float(amount)
+        
+        action_text = "ADD" if action == "add" else "DEDUCT"
+        
+        await update.message.reply_text(
+            f"Balance {action_text}\n\n"
+            f"Amount: ₹{float(amount):.2f}\n\n"
+            f"Enter reason:\n"
+            f"(Minimum 5 characters)\n\n"
+            f"/cancel to abort",
+            parse_mode=None
+        )
+        return WALLET_REASON
+        
+    except (ValueError, InvalidOperation):
+        await update.message.reply_text(
+            "Invalid amount\n\n"
+            "Enter a valid number or /cancel",
+            parse_mode=None
+        )
+        return WALLET_AMOUNT
+
+async def receive_wallet_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive reason for wallet add/deduct"""
+    reason = update.message.text.strip()
+    
+    # Validate reason
+    if len(reason) < 5:
+        await update.message.reply_text(
+            "Invalid reason\n\n"
+            "Reason must be at least 5 characters.\n\n"
+            "Enter a valid reason or /cancel",
+            parse_mode=None
+        )
+        return WALLET_REASON
+    
+    if len(reason) > 200:
+        await update.message.reply_text(
+            "Invalid reason\n\n"
+            "Reason must be less than 200 characters.\n\n"
+            "Enter a valid reason or /cancel",
+            parse_mode=None
+        )
+        return WALLET_REASON
+    
+    # Store reason
+    context.user_data['wallet_reason'] = reason
+    
+    # Get stored data
+    action = context.user_data.get('wallet_action')
+    amount = context.user_data.get('wallet_amount')
+    uid = context.user_data.get('wallet_target_user')
+    name = context.user_data.get('wallet_target_name')
+    
+    action_text = "ADD" if action == "add" else "DEDUCT"
+    
+    # Show confirmation
+    text = f"""Confirm Balance Update
+
+User: {name} (ID: {uid})
+Action: {action_text}
+Amount: ₹{amount:.2f}
+Reason: {reason}
+
+⚠️ This action cannot be undone."""
+    
+    kb = [
+        [InlineKeyboardButton("✅ Confirm", callback_data=f"wallet_confirm_{uid}"),
+         InlineKeyboardButton("❌ Cancel", callback_data="wallet_cancel")]
+    ]
+    
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode=None
+    )
+    
+    return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -2532,6 +2840,16 @@ def main():
         per_message=False,
         entry_points=[CallbackQueryHandler(callback, pattern="^broadcast$")],
         states={BROADCAST_MSG: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_broadcast)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    wallet_conv = ConversationHandler(
+        per_message=False,
+        entry_points=[CallbackQueryHandler(callback, pattern="^wallet_(add|deduct)_")],
+        states={
+            WALLET_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet_amount)],
+            WALLET_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_wallet_reason)],
+        },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
