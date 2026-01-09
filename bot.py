@@ -224,9 +224,16 @@ def validate_upi(upi_id):
     return bool(re.match(pattern, upi_id))
 
 def validate_usdt_address(address):
-    if not address or len(address) != 34:
+    if not address or len(address) != 42:
         return False
-    return address.startswith('T')
+    if not address.startswith('0x'):
+        return False
+    # Validate hexadecimal characters after 0x
+    try:
+        int(address[2:], 16)
+        return True
+    except ValueError:
+        return False
 
 def mask_email(email):
     """Mask email for privacy"""
@@ -1051,7 +1058,7 @@ Share this link with friends to start earning."""
         return UPI_ID
     
     elif d == "set_usdt":
-        await q.edit_message_text("Setup USDT\n\nSend your TRC20 address\n/cancel to abort", 
+        await q.edit_message_text("Setup USDT\n\nSend your BEP20 (BSC) address\n/cancel to abort", 
                                   parse_mode=None)
         return USDT_ADDRESS
     
@@ -2169,7 +2176,8 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not validate_usdt_address(addr):
         await update.message.reply_text(
             "Invalid USDT address\n\n"
-            "Must be 34 characters, starting with 'T'\n\n"
+            "Must be 42 characters, starting with '0x'\n"
+            "Example: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\n\n"
             "/cancel to abort",
             parse_mode=None
         )
@@ -2247,7 +2255,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
                     return WITHDRAW_AMT
                 
                 payment_info = result['upi_id'] if method == 'upi' else result['usdt_address']
-                method_name = "UPI" if method == 'upi' else "USDT TRC20"
+                method_name = "UPI" if method == 'upi' else "USDT BEP20"
                 
                 # ATOMIC DEDUCTION
                 c.execute("""
