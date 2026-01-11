@@ -1722,75 +1722,162 @@ Page {page + 1} of {total_pages}
             logger.error(f"Error rejecting all gmails for user {uid}: {e}")
             await q.answer("Error occurred", show_alert=True)
     
-    # WITHDRAWAL QUEUE WITH PAGINATION
+    # ==================== IMPROVED WITHDRAWAL QUEUE ====================
+    
+    # WITHDRAWAL QUEUE - Single Item View with Navigation
     elif d == "withdrawal_queue" or d.startswith("withdrawal_queue_"):
         if q.from_user.id != ADMIN_ID:
             return
         
         page = validate_page(d.split("_")[-1]) if "_" in d else 0
-        offset = page * ADMIN_WITHDRAWALS_PER_PAGE
         
         with get_db() as conn:
             c = conn.cursor()
+            
+            # Get total count
+            c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
+            total_pending = c.fetchone().values().__iter__().__next__()
+            
+            if total_pending == 0:
+                await safe_edit_or_reply(
+                    q,
+                    "No pending withdrawal requests",
+                    InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔙 Back", callback_data="admin")]
+                    ])
+                )
+                return
+            
+            # Ensure page is within bounds
+            if page < 0:
+                page = 0
+            elif page >= total_pending:
+                page = total_pending - 1
+            
+            # Get single withdrawal at offset
             c.execute("""SELECT w.id, w.amount, w.fee, w.final_amount, w.method, w.payment_info, w.request_date,
                          u.first_name, u.username, u.user_id
                          FROM withdrawals w JOIN users u ON w.user_id = u.user_id
                          WHERE w.status='pending'
                          ORDER BY w.request_date 
-                         LIMIT %s OFFSET %s""", (ADMIN_WITHDRAWALS_PER_PAGE, offset))
-            withdrawals = c.fetchall()
-            
-            c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
-            total_pending = c.fetchone().values().__iter__().__next__()
+                         LIMIT 1 OFFSET %s""", (page,))
+            withdrawal = c.fetchone()
         
-        if withdrawals:
-            total_pages = (total_pending + ADMIN_WITHDRAWALS_PER_PAGE - 1) // ADMIN_WITHDRAWALS_PER_PAGE
+        if withdrawal:
+            wid = withdrawal['id']
+            amount = float(withdrawal['amount'])
+            fee = float(withdrawal['fee'])
+            final_amount = float(withdrawal['final_amount'])
+            method = withdrawal['method']
+            info = withdrawal['payment_info']
+            date = withdrawal['request_date']
+            name = withdrawal['first_name']
+            username = withdrawal['username']
+            uid = withdrawal['user_id']
             
-            for idx, sub in enumerate(withdrawals):
-                wid, amount, fee, final_amount, method, info, date = sub['id'], float(sub['amount']), float(sub['fee']), float(sub['final_amount']), sub['method'], sub['payment_info'], sub['request_date']
-                name, username, uid = sub['first_name'], sub['username'], sub['user_id']
-                
-                text = f"""Withdrawal #{wid} (Page {page + 1} of {total_pages})
+            text = f"""Withdrawal #{wid}
+
+Position: {page + 1} of {total_pending}
 
 User: {name} (@{username or 'N/A'})
+User ID: {uid}
 Amount: ₹{amount:.2f}
 Fee: ₹{fee:.2f}
 Final amount: ₹{final_amount:.2f}
 Method: {method.upper()}
 Payment info: {info}
-Date: {date[:16]}
-
-Showing {offset + idx + 1} of {total_pending}"""
-                
-                kb = [
-                    [InlineKeyboardButton("✅ Approve", callback_data=f"aw_{wid}"),
-                     InlineKeyboardButton("❌ Reject", callback_data=f"rw_{wid}")]
-                ]
-                
-                nav = []
-                if page > 0:
-                    nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"withdrawal_queue_{page-1}"))
-                if offset + ADMIN_WITHDRAWALS_PER_PAGE < total_pending:
-                    nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"withdrawal_queue_{page+1}"))
-                if nav:
-                    kb.append(nav)
-                
-                kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
-                
-                await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
-                break
+Date: {date[:16]}"""
+            
+            kb = []
+            
+            # Action buttons
+            kb.append([
+                InlineKeyboardButton("✅ Approve", callback_data=f"withdraw_approve_{wid}_{page}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"withdraw_reject_{wid}_{page}")
+            ])
+            
+            # Navigation buttons
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"withdrawal_queue_{page-1}"))
+            if page < total_pending - 1:
+                nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"withdrawal_queue_{page+1}"))
+            if nav:
+                kb.append(nav)
+            
+            kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
+            
+            await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
         else:
+            # Fallback
             await safe_edit_or_reply(
-    q,
-    "No pending withdrawal requests",
-    InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="admin")]
-    ])
-)
+                q,
+                "No withdrawal found at this position",
+                InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Back", callback_data="admin")]
+                ])
+            )
     
-    # APPROVE WITHDRAWAL - IDEMPOTENT
-    elif d.startswith("aw_"):
-        wid = int(d.split("_")[1])
+    # APPROVE CONFIRMATION SCREEN
+    elif d.startswith("withdraw_approve_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        wid = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        # Get withdrawal details
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT w.amount, w.fee, w.final_amount, w.method, w.payment_info,
+                         u.first_name, u.username, u.user_id
+                         FROM withdrawals w JOIN users u ON w.user_id = u.user_id
+                         WHERE w.id=%s AND w.status='pending'""", (wid,))
+            result = c.fetchone()
+        
+        if not result:
+            await q.answer("Withdrawal already processed", show_alert=True)
+            q.data = f"withdrawal_queue_{page}"
+            await callback(update, context)
+            return
+        
+        amount = float(result['amount'])
+        final_amount = float(result['final_amount'])
+        method = result['method']
+        info = result['payment_info']
+        name = result['first_name']
+        username = result['username']
+        uid = result['user_id']
+        
+        text = f"""⚠️ Confirm Withdrawal Approval
+
+Withdrawal ID: #{wid}
+User: {name} (@{username or 'N/A'})
+User ID: {uid}
+
+Amount: ₹{amount:.2f}
+Final amount: ₹{final_amount:.2f}
+Method: {method.upper()}
+Payment info: {info}
+
+⚠️ This action cannot be undone."""
+        
+        kb = [
+            [InlineKeyboardButton("✅ Confirm Approve", callback_data=f"withdraw_approve_confirm_{wid}_{page}"),
+             InlineKeyboardButton("❌ Cancel", callback_data=f"withdrawal_queue_{page}")]
+        ]
+        
+        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+    
+    # APPROVE EXECUTION (AFTER CONFIRMATION)
+    elif d.startswith("withdraw_approve_confirm_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        wid = int(parts[3])
+        page = int(parts[4]) if len(parts) > 4 else 0
         
         try:
             with get_db() as conn:
@@ -1808,6 +1895,8 @@ Showing {offset + idx + 1} of {total_pending}"""
                 
                 if not result:
                     await q.answer("Already processed", show_alert=True)
+                    q.data = f"withdrawal_queue_{page}"
+                    await callback(update, context)
                     return
                 
                 uid, amount, final_amount = result['user_id'], float(result['amount']), float(result['final_amount'])
@@ -1823,17 +1912,90 @@ Showing {offset + idx + 1} of {total_pending}"""
                     f"Payment has been processed successfully\n"
                     f"Please check your payment method")
                 
-                await q.answer("Withdrawal approved", show_alert=True)
+                await q.answer("✅ Withdrawal approved", show_alert=True)
                 
-                q.data = "withdrawal_queue"
+                # Return to queue
+                q.data = f"withdrawal_queue_{page}"
                 await callback(update, context)
+                
         except Exception as e:
             logger.error(f"Error approving withdrawal {wid}: {e}")
             await q.answer("Error occurred", show_alert=True)
     
-    # REJECT WITHDRAWAL - ATOMIC WITH REFUND
-    elif d.startswith("rw_"):
-        wid = int(d.split("_")[1])
+    # REJECT CONFIRMATION SCREEN
+    elif d.startswith("withdraw_reject_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        wid = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        # Get withdrawal details
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT w.amount, w.method, w.payment_info,
+                         u.first_name, u.username, u.user_id
+                         FROM withdrawals w JOIN users u ON w.user_id = u.user_id
+                         WHERE w.id=%s AND w.status='pending'""", (wid,))
+            result = c.fetchone()
+        
+        if not result:
+            await q.answer("Withdrawal already processed", show_alert=True)
+            q.data = f"withdrawal_queue_{page}"
+            await callback(update, context)
+            return
+        
+        amount = float(result['amount'])
+        method = result['method']
+        info = result['payment_info']
+        name = result['first_name']
+        username = result['username']
+        uid = result['user_id']
+        
+        text = f"""⚠️ Confirm Withdrawal Rejection
+
+Withdrawal ID: #{wid}
+User: {name} (@{username or 'N/A'})
+User ID: {uid}
+
+Amount: ₹{amount:.2f}
+Method: {method.upper()}
+Payment info: {info}
+
+The amount will be refunded to user's balance.
+
+⚠️ Please choose rejection reason:"""
+        
+        kb = [
+            [InlineKeyboardButton("❌ Invalid Payment Info", callback_data=f"withdraw_reject_confirm_{wid}_{page}_invalid")],
+            [InlineKeyboardButton("❌ Duplicate Request", callback_data=f"withdraw_reject_confirm_{wid}_{page}_duplicate")],
+            [InlineKeyboardButton("❌ Suspicious Activity", callback_data=f"withdraw_reject_confirm_{wid}_{page}_suspicious")],
+            [InlineKeyboardButton("❌ Other Reason", callback_data=f"withdraw_reject_confirm_{wid}_{page}_other")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data=f"withdrawal_queue_{page}")]
+        ]
+        
+        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+    
+    # REJECT EXECUTION (AFTER CONFIRMATION)
+    elif d.startswith("withdraw_reject_confirm_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        wid = int(parts[3])
+        page = int(parts[4])
+        reason_code = parts[5] if len(parts) > 5 else "other"
+        
+        # Map reason codes to messages
+        reason_map = {
+            "invalid": "Invalid payment information",
+            "duplicate": "Duplicate withdrawal request",
+            "suspicious": "Suspicious activity detected",
+            "other": "Does not meet withdrawal requirements"
+        }
+        
+        rejection_reason = reason_map.get(reason_code, "Does not meet withdrawal requirements")
         
         try:
             with get_db() as conn:
@@ -1845,12 +2007,14 @@ Showing {offset + idx + 1} of {total_pending}"""
                     SET status='rejected', processed_date=%s, rejection_reason=%s 
                     WHERE id=%s AND status='pending'
                     RETURNING user_id, amount
-                """, (datetime.now().isoformat(), "Invalid payment information", wid))
+                """, (datetime.now().isoformat(), rejection_reason, wid))
                 
                 result = c.fetchone()
                 
                 if not result:
                     await q.answer("Already processed", show_alert=True)
+                    q.data = f"withdrawal_queue_{page}"
+                    await callback(update, context)
                     return
                 
                 uid, amount = result['user_id'], round_decimal(result['amount'])
@@ -1859,20 +2023,22 @@ Showing {offset + idx + 1} of {total_pending}"""
                 c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
                 conn.commit()
                 
-                log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded")
+                log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded - {rejection_reason}")
                 
                 await notify_user(context, uid,
                     f"Withdrawal rejected\n\n"
                     f"Withdrawal ID: #{wid}\n"
                     f"Amount: ₹{float(amount):.2f}\n"
-                    f"Reason: Invalid payment information\n\n"
+                    f"Reason: {rejection_reason}\n\n"
                     f"Amount refunded to your balance\n"
                     f"Please update your payment details and try again")
                 
-                await q.answer("Rejected and refunded", show_alert=True)
+                await q.answer("❌ Withdrawal rejected and refunded", show_alert=True)
                 
-                q.data = "withdrawal_queue"
+                # Return to queue
+                q.data = f"withdrawal_queue_{page}"
                 await callback(update, context)
+                
         except Exception as e:
             logger.error(f"Error rejecting withdrawal {wid}: {e}")
             await q.answer("Error occurred", show_alert=True)
