@@ -1258,34 +1258,52 @@ Support: @{SUPPORT_USERNAME}"""
     
     # HELP
     elif d == "help":
-        text = f"""Help & Support
+        text = f"""📜 Help & Support – EarnX Bot
 
-How it works:
-1. Submit your Gmail accounts
-2. Wait for verification (24-48 hours)
-3. Earn based on your tier
-4. Withdraw when you reach ₹100
+📌 How it works:
+1️⃣ Submit Gmail accounts (single or bulk)
+2️⃣ Accounts go under review (24–48 hours)
+3️⃣ Approved accounts earn rewards
+4️⃣ Withdraw once balance reaches ₹100
 
-Earning rates:
-- 0-49 accounts: ₹20 each
-- 50-99 accounts: ₹25 each
-- 100+ accounts: ₹30 each
+📦 Gmail Submission:
+• Single & Bulk submission supported
+• Bulk limit: 2–20 Gmail per message
+• Only gmail.com allowed
+• Duplicate / fake Gmail = rejected
 
-Bonus earnings:
-- Channel join: ₹1
-- Referral: ₹5 per friend (after first verified submission)
+💰 Reward System (Rolling 7-Day Activity):
+Rates depend on LAST 7 DAYS approved Gmail:
+• 0–99 approvals → ₹20 per Gmail
+• 100–199 approvals → ₹25 per Gmail
+• 200+ approvals → ₹30 per Gmail
 
-Withdrawal:
-- Minimum: ₹100
-- Fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
-- Limit: {MAX_WITHDRAWALS_PER_DAY} per day
-- Methods: UPI & USDT
-- Processing: 24-48 hours
+⚠️ Important:
+• Rates are NOT lifetime locked
+• Inactivity may reduce your rate
+• Stay active to keep higher earnings
+
+🎁 Bonus Earnings:
+• Channel join: ₹1
+• Referral: ₹5 per friend
+  (after first verified submission)
+
+💵 Withdrawals:
+• Minimum: ₹100
+• Fee: {WITHDRAWAL_FEE_PERCENT}% (minimum ₹{WITHDRAWAL_FEE_MIN})
+• Limit: {MAX_WITHDRAWALS_PER_DAY} per day
+• Methods: UPI & USDT (BEP20)
+• Processing: 24–48 hours
+
+🔒 Fair Usage Policy:
+• One user = one account
+• Abuse may lead to ban
+• Admin decision is final
 
 Allowed emails:
 - {', '.join(ALLOWED_DOMAINS)}
 
-Need help? Contact support:
+📩 Need help? Contact support:
 @{SUPPORT_USERNAME}"""
         
         kb = [
