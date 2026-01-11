@@ -2938,6 +2938,12 @@ async def auto_message_worker(app: Application):
         # ⏳ WAIT 6 HOURS
         await asyncio.sleep(6 * 60 * 60)
 
+async def post_init(application):
+    """
+    Runs after bot starts and event loop is ready
+    """
+    application.create_task(auto_message_worker(application))
+
 def main():
     print("Starting bot...")
     print("=" * 50)
@@ -2945,8 +2951,7 @@ def main():
 
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.create_task(auto_message_worker(app))
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Conversation handlers
     gmail_conv = ConversationHandler(
