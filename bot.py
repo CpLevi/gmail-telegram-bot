@@ -1549,7 +1549,7 @@ Page {page + 1} of {total_pages}
                     SET status='rejected', review_date=%s, rejection_reason=%s 
                     WHERE id=%s AND status='pending'
                     RETURNING user_id, email
-                """, (datetime.now().isoformat(), "Invalid or duplicate account", gid))
+                """, (datetime.now().isoformat(), "Wrong Password or Invalid Account", gid))
                 
                 result = c.fetchone()
                 
@@ -1566,7 +1566,7 @@ Page {page + 1} of {total_pages}
                 await notify_user(context, uid,
                     f"Gmail submission rejected\n\n"
                     f"Email: {email}\n"
-                    f"Reason: Invalid or duplicate account\n\n"
+                    f"Reason: Wrong Password or Invalid Account\n\n"
                     f"No amount has been credited\n"
                     f"Please submit valid Gmail accounts only")
                 
