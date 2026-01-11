@@ -189,6 +189,46 @@ def init_db():
                 logger.error(f"Error creating index {idx_name}: {e}")
         
         conn.commit()
+        # ==================== SYSTEM CONTROL TABLES ====================
+
+# Temporary rate offers (24h / festival / promo)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS rate_rules (
+            id SERIAL PRIMARY KEY,
+            rate DECIMAL(10,2) NOT NULL,
+            start_time TIMESTAMP NOT NULL,
+            end_time TIMESTAMP NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT NOW()
+        )''')
+
+# Auto engagement messages
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS auto_messages (
+            id SERIAL PRIMARY KEY,
+            message TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+         TIMESTAMP DEFAULT NOW()
+)
+''')
+
+# System flags (on/off switches)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS system_flags (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+)
+''')
+
+# Insert default flags safely
+        c.execute('''
+            INSERT INTO system_flags (key, value)
+            VALUES 
+            ('auto_messages_enabled', 'true'),
+            ('offers_enabled', 'true')
+            ON CONFLICT (key) DO NOTHING
+''')
+
         logger.info("✅ Database initialized successfully")
 
 def round_decimal(value):
