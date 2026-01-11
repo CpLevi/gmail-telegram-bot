@@ -394,22 +394,36 @@ async def check_channel(user_id, context):
 
 def calc_rate(user_id):
     """
-    Calculate reward rate based on LAST 7 DAYS of approved Gmail (rolling window)
-    
-    Slabs:
-    0–99   → ₹20
-    100–199 → ₹25
-    200+   → ₹30
+    Reward calculation priority:
+    1️⃣ Active time-limited offer from DB (highest priority)
+    2️⃣ Weekly rolling tier (last 7 days) fallback
     """
+
     with get_db() as conn:
         c = conn.cursor()
 
-        # Count approved Gmail in last 7 days
+        # 🔥 STEP 1: CHECK ACTIVE TIME-LIMITED OFFER
         c.execute("""
-            SELECT COUNT(*) FROM gmail
-            WHERE user_id = %s 
-            AND status = 'approved'
-            AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
+            SELECT rate
+            FROM rate_rules
+            WHERE is_active = TRUE
+              AND start_time <= NOW()
+              AND end_time >= NOW()
+            ORDER BY rate DESC
+            LIMIT 1
+        """)
+        offer = c.fetchone()
+
+        if offer:
+            return Decimal(str(offer['rate']))
+
+        # 🔁 STEP 2: WEEKLY ROLLING LOGIC (YOUR ORIGINAL SYSTEM)
+        c.execute("""
+            SELECT COUNT(*) 
+            FROM gmail
+            WHERE user_id = %s
+              AND status = 'approved'
+              AND review_date::timestamptz >= NOW() - INTERVAL '7 days'
         """, (user_id,))
 
         approved_last_7_days = list(c.fetchone().values())[0]
@@ -2873,6 +2887,56 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             await context.bot.send_message(ADMIN_ID, error_msg, parse_mode=None)
     except Exception as e:
         logger.error(f"Failed to send error notification: {e}")
+    
+async def auto_message_worker(app: Application):
+    """Send auto engagement messages every 6 hours"""
+    await asyncio.sleep(30)  # wait for bot startup
+
+    while True:
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+
+                # Check if auto messages are enabled
+                c.execute("SELECT value FROM system_flags WHERE key='auto_messages_enabled'")
+                flag = c.fetchone()
+                if not flag or flag['value'] != 'true':
+                    await asyncio.sleep(3600)
+                    continue
+
+                # Get one random active message
+                c.execute("""
+                    SELECT message FROM auto_messages
+                    WHERE is_active = TRUE
+                    ORDER BY RANDOM()
+                    LIMIT 1
+                """)
+                msg = c.fetchone()
+                if not msg:
+                    await asyncio.sleep(3600)
+                    continue
+
+                message_text = msg['message']
+
+                # Get all active users
+                c.execute("SELECT user_id FROM users WHERE is_blocked = 0")
+                users = c.fetchall()
+
+            sent = 0
+            for u in users:
+                try:
+                    await app.bot.send_message(u['user_id'], message_text, parse_mode=None)
+                    sent += 1
+                except:
+                    pass
+
+            logger.info(f"📢 Auto message sent to {sent} users")
+
+        except Exception as e:
+            logger.error(f"Auto message error: {e}")
+
+        # ⏳ WAIT 6 HOURS
+        await asyncio.sleep(6 * 60 * 60)
 
 def main():
     print("Starting bot...")
@@ -2882,6 +2946,7 @@ def main():
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
+    app.create_task(auto_message_worker(app))
 
     # Conversation handlers
     gmail_conv = ConversationHandler(
