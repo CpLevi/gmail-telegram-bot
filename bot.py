@@ -859,6 +859,8 @@ Under verification:
 🔍 In review: ₹{in_review:.2f}
 💰 Total: ₹{total_pending:.2f}
 
+ℹ️ "In review" means admin has forwarded your gmail to our verification team. You will be paid once approved.
+
 Statistics:
 Approved (all time): {approved}
 Total submitted: {total}
