@@ -1893,9 +1893,54 @@ Payment info: {info}
         if q.from_user.id != ADMIN_ID:
             return
         
+        # Parse: withdraw_approve_confirm_{wid}_{page}
+        # Split: ["withdraw", "approve", "confirm", "{wid}", "{page}"]
         parts = d.split("_")
-        wid = int(parts[3])
-        page = int(parts[4]) if len(parts) > 4 else 0
+        wid = int(parts[3])  # parts[3] is withdrawal_id
+        page = int(parts[4]) if len(parts) > 4 else 0  # parts[4] is page
+        
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                
+                # ATOMIC UPDATE
+                c.execute("""
+                    UPDATE withdrawals 
+                    SET status='approved', processed_date=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, amount, final_amount
+                """, (datetime.now().isoformat(), wid))
+                
+                result = c.fetchone()
+                
+                if not result:
+                    await q.answer("Already processed", show_alert=True)
+                    q.data = f"withdrawal_queue_{page}"
+                    await callback(update, context)
+                    return
+                
+                uid, amount, final_amount = result['user_id'], float(result['amount']), float(result['final_amount'])
+                conn.commit()
+                
+                log_audit("approve_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{amount:.2f}")
+                
+                await notify_user(context, uid,
+                    f"Withdrawal approved\n\n"
+                    f"Withdrawal ID: #{wid}\n"
+                    f"Amount: ₹{amount:.2f}\n"
+                    f"Final amount: ₹{final_amount:.2f}\n\n"
+                    f"Payment has been processed successfully\n"
+                    f"Please check your payment method")
+                
+                await q.answer("✅ Withdrawal approved", show_alert=True)
+                
+                # Return to queue
+                q.data = f"withdrawal_queue_{page}"
+                await callback(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error approving withdrawal {wid}: {e}")
+            await q.answer("Error occurred", show_alert=True)
         
         try:
             with get_db() as conn:
@@ -2000,10 +2045,68 @@ The amount will be refunded to user's balance.
         if q.from_user.id != ADMIN_ID:
             return
         
+        # Parse: withdraw_reject_confirm_{wid}_{page}_{reason}
+        # Split: ["withdraw", "reject", "confirm", "{wid}", "{page}", "{reason}"]
         parts = d.split("_")
-        wid = int(parts[3])
-        page = int(parts[4])
-        reason_code = parts[5] if len(parts) > 5 else "other"
+        wid = int(parts[3])  # parts[3] is withdrawal_id
+        page = int(parts[4])  # parts[4] is page
+        reason_code = parts[5] if len(parts) > 5 else "other"  # parts[5] is reason
+        
+        # Map reason codes to messages
+        reason_map = {
+            "invalid": "Invalid payment information",
+            "duplicate": "Duplicate withdrawal request",
+            "suspicious": "Suspicious activity detected",
+            "other": "Does not meet withdrawal requirements"
+        }
+        
+        rejection_reason = reason_map.get(reason_code, "Does not meet withdrawal requirements")
+        
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                
+                # ATOMIC UPDATE
+                c.execute("""
+                    UPDATE withdrawals 
+                    SET status='rejected', processed_date=%s, rejection_reason=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING user_id, amount
+                """, (datetime.now().isoformat(), rejection_reason, wid))
+                
+                result = c.fetchone()
+                
+                if not result:
+                    await q.answer("Already processed", show_alert=True)
+                    q.data = f"withdrawal_queue_{page}"
+                    await callback(update, context)
+                    return
+                
+                uid, amount = result['user_id'], round_decimal(result['amount'])
+                
+                # REFUND TO BALANCE
+                c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
+                conn.commit()
+                
+                log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded - {rejection_reason}")
+                
+                await notify_user(context, uid,
+                    f"Withdrawal rejected\n\n"
+                    f"Withdrawal ID: #{wid}\n"
+                    f"Amount: ₹{float(amount):.2f}\n"
+                    f"Reason: {rejection_reason}\n\n"
+                    f"Amount refunded to your balance\n"
+                    f"Please update your payment details and try again")
+                
+                await q.answer("❌ Withdrawal rejected and refunded", show_alert=True)
+                
+                # Return to queue
+                q.data = f"withdrawal_queue_{page}"
+                await callback(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error rejecting withdrawal {wid}: {e}")
+            await q.answer("Error occurred", show_alert=True)
         
         # Map reason codes to messages
         reason_map = {
