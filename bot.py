@@ -49,6 +49,12 @@ ADMIN_USERS_PER_PAGE = 10
 ADMIN_GMAIL_PER_PAGE = 10  # Increased from 5
 ADMIN_WITHDRAWALS_PER_PAGE = 5
 
+# Gmail status constants
+GMAIL_STATUS_PENDING = "pending"
+GMAIL_STATUS_IN_REVIEW = "in_review"
+GMAIL_STATUS_APPROVED = "approved"
+GMAIL_STATUS_REJECTED = "rejected"
+
 EMAIL, PASSWORD, USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, BROADCAST_MSG, USER_SEARCH, BULK_GMAIL, WALLET_AMOUNT, WALLET_REASON = range(10)
 
 @contextmanager
@@ -98,6 +104,7 @@ def init_db():
             submit_date TEXT,
             review_date TEXT,
             rejection_reason TEXT,
+            worker_sent_date TEXT,
             UNIQUE(email)
         )''')
         
@@ -154,6 +161,7 @@ def init_db():
             ("users", "last_submit_time", "TEXT"),
             ("gmail", "review_date", "TEXT"),
             ("gmail", "rejection_reason", "TEXT"),
+            ("gmail", "worker_sent_date", "TEXT"),
             ("withdrawals", "processed_date", "TEXT"),
             ("withdrawals", "rejection_reason", "TEXT"),
             ("withdrawals", "fee", "DECIMAL(10,2) DEFAULT 0"),
@@ -174,6 +182,7 @@ def init_db():
             ("idx_gmail_user_status", "gmail", "user_id, status"),
             ("idx_gmail_status", "gmail", "status"),
             ("idx_gmail_email", "gmail", "email"),
+            ("idx_gmail_status_worker", "gmail", "status, worker_sent_date"),
             ("idx_withdrawals_user_status", "withdrawals", "user_id, status"),
             ("idx_withdrawals_status", "withdrawals", "status"),
             ("idx_withdrawals_date", "withdrawals", "request_date"),
@@ -986,7 +995,13 @@ Share this link with friends to start earning."""
         text = f"Gmail History (Page {page+1})\n\n"
         if subs:
             for sub in subs:
-                emoji = {"pending": "⏳", "approved": "✅", "rejected": "❌"}[sub['status']]
+                status_emojis = {
+                    "pending": "⏳",
+                    "in_review": "🔍",
+                    "approved": "✅",
+                    "rejected": "❌"
+                }
+                emoji = status_emojis.get(sub['status'], "❓")
                 reward_val = float(sub['reward']) if sub['reward'] else 0
                 text += f"{emoji} {mask_email(sub['email'])}\n   {sub['status'].title()} - ₹{reward_val}"
                 if sub['rejection_reason']:
@@ -1339,8 +1354,7 @@ Pending withdrawals: {pw}"""
         ]
         await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
     
-    # GMAIL QUEUE
-    # GMAIL QUEUE WITH PAGINATION
+    # GMAIL QUEUE WITH PAGINATION AND STATUS FILTER
     elif d == "gmail_queue" or d.startswith("gmail_queue_"):
         if q.from_user.id != ADMIN_ID:
             return
@@ -1350,7 +1364,10 @@ Pending withdrawals: {pw}"""
         
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("""SELECT DISTINCT u.user_id, u.first_name, u.username, COUNT(g.id) as cnt
+            
+            # Count pending gmails
+            c.execute("""SELECT DISTINCT u.user_id, u.first_name, u.username, 
+                         COUNT(g.id) as cnt
                          FROM gmail g JOIN users u ON g.user_id = u.user_id
                          WHERE g.status='pending'
                          GROUP BY u.user_id, u.first_name, u.username 
@@ -1358,17 +1375,29 @@ Pending withdrawals: {pw}"""
                          LIMIT %s OFFSET %s""", (ADMIN_USERS_PER_PAGE, offset))
             users_pending = c.fetchall()
             
-            c.execute("""SELECT COUNT(DISTINCT user_id) 
-                         FROM gmail WHERE status='pending'""")
+            # Count in_review gmails
+            c.execute("""SELECT COUNT(DISTINCT user_id) FROM gmail WHERE status='in_review'""")
+            in_review_count = c.fetchone().values().__iter__().__next__()
+            
+            c.execute("""SELECT COUNT(DISTINCT user_id) FROM gmail WHERE status='pending'""")
             total_users = c.fetchone().values().__iter__().__next__()
         
-        if users_pending:
-            total_pages = (total_users + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE
-            text = f"Gmail Queue (Page {page + 1} of {total_pages})\n\n"
+        if users_pending or in_review_count > 0:
+            total_pages = (total_users + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE if total_users > 0 else 1
+            text = f"📧 Gmail Queue (Page {page + 1} of {total_pages})\n\n"
+            text += f"📋 In Review: {in_review_count} users\n"
+            text += f"⏳ Pending: {total_users} users\n\n"
+            
             kb = []
+            
+            # Add button to view in_review gmails
+            if in_review_count > 0:
+                kb.append([InlineKeyboardButton("🔍 View In Review", callback_data="gmail_in_review_0")])
+            
+            # List pending users
             for row in users_pending:
                 uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
-                text += f"{name} (@{username or 'N/A'}) - {cnt} pending\n"
+                text += f"⏳ {name} (@{username or 'N/A'}) - {cnt} pending\n"
                 kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}_0")])
             
             nav = []
@@ -1382,10 +1411,56 @@ Pending withdrawals: {pw}"""
             kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
             await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
         else:
-            await q.edit_message_text("No pending Gmail submissions",
+            await q.edit_message_text("✅ No pending Gmail submissions",
                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
-    
-    # Individual Gmail Review WITH PAGINATION (10 per page)
+    # VIEW IN_REVIEW GMAILS
+    elif d.startswith("gmail_in_review_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        page = validate_page(d.split("_")[-1])
+        offset = page * ADMIN_USERS_PER_PAGE
+        
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT DISTINCT u.user_id, u.first_name, u.username, 
+                         COUNT(g.id) as cnt
+                         FROM gmail g JOIN users u ON g.user_id = u.user_id
+                         WHERE g.status='in_review'
+                         GROUP BY u.user_id, u.first_name, u.username 
+                         ORDER BY cnt DESC 
+                         LIMIT %s OFFSET %s""", (ADMIN_USERS_PER_PAGE, offset))
+            users_in_review = c.fetchall()
+            
+            c.execute("""SELECT COUNT(DISTINCT user_id) FROM gmail WHERE status='in_review'""")
+            total_users = c.fetchone().values().__iter__().__next__()
+        
+        if users_in_review:
+            total_pages = (total_users + ADMIN_USERS_PER_PAGE - 1) // ADMIN_USERS_PER_PAGE
+            text = f"🔍 In Review (Page {page + 1} of {total_pages})\n\n"
+            
+            kb = []
+            for row in users_in_review:
+                uid, name, username, cnt = row['user_id'], row['first_name'], row['username'], row['cnt']
+                text += f"🔍 {name} (@{username or 'N/A'}) - {cnt} in review\n"
+                kb.append([InlineKeyboardButton(f"{name} ({cnt})", callback_data=f"user_gmail_{uid}_0")])
+            
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"gmail_in_review_{page-1}"))
+            if offset + ADMIN_USERS_PER_PAGE < total_users:
+                nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"gmail_in_review_{page+1}"))
+            if nav:
+                kb.append(nav)
+            
+            kb.append([InlineKeyboardButton("🔙 Back to Queue", callback_data="gmail_queue_0")])
+            await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        else:
+            await q.edit_message_text("✅ No gmails in review",
+                                     reply_markup=InlineKeyboardMarkup([
+                                         [InlineKeyboardButton("🔙 Back", callback_data="gmail_queue_0")]
+                                     ]))
+    # Individual Gmail Review WITH PAGINATION AND STATUS DISPLAY
     elif d.startswith("user_gmail_"):
         parts = d.split("_")
         uid = int(parts[2])
@@ -1395,13 +1470,16 @@ Pending withdrawals: {pw}"""
         
         with get_db() as conn:
             c = conn.cursor()
-            c.execute("""SELECT id, email, password, reward, submit_date, status
-                        FROM gmail WHERE user_id=%s AND status='pending' 
-                        ORDER BY submit_date ASC
+            # Show both pending and in_review
+            c.execute("""SELECT id, email, password, reward, submit_date, status, worker_sent_date
+                        FROM gmail WHERE user_id=%s AND status IN ('pending', 'in_review') 
+                        ORDER BY 
+                            CASE WHEN status='pending' THEN 0 ELSE 1 END,
+                            submit_date ASC
                         LIMIT %s OFFSET %s""", (uid, ADMIN_GMAIL_PER_PAGE, offset))
             gmails = c.fetchall()
             
-            c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+            c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status IN ('pending', 'in_review')", (uid,))
             total_pending = c.fetchone().values().__iter__().__next__()
             
             c.execute("SELECT first_name, username FROM users WHERE user_id=%s", (uid,))
@@ -1418,17 +1496,21 @@ Pending withdrawals: {pw}"""
             
             total_pages = (total_pending + ADMIN_GMAIL_PER_PAGE - 1) // ADMIN_GMAIL_PER_PAGE
             
-            text = f"""Gmail Review - {name}
+            text = f"""📧 Gmail Review - {name}
 
 User: @{username or 'N/A'} (ID: {uid})
-Total pending: {total_pending}
+Total: {total_pending}
 Page {page + 1} of {total_pages}
 
 """
             
             for idx, gmail in enumerate(gmails, 1):
                 gid, email, pwd, reward = gmail['id'], gmail['email'], gmail['password'], float(gmail['reward'])
-                text += f"""{idx}. Gmail #{gid}
+                status = gmail['status']
+                status_emoji = "⏳" if status == "pending" else "🔍"
+                status_text = "Pending" if status == "pending" else "In Review"
+                
+                text += f"""{idx}. Gmail #{gid} {status_emoji} {status_text}
 {email}
 {pwd}
 ₹{reward}
@@ -1437,7 +1519,16 @@ Page {page + 1} of {total_pages}
             
             kb = []
             
-            # Batch action buttons
+            # Count pending vs in_review
+            pending_count = sum(1 for g in gmails if g['status'] == 'pending')
+            in_review_count = sum(1 for g in gmails if g['status'] == 'in_review')
+            
+            # Batch action buttons for pending only
+            if pending_count > 0:
+                kb.append([
+                    InlineKeyboardButton(f"📤 Send All to Review ({pending_count})", callback_data=f"send_review_all_{uid}_{page}")
+                ])
+            
             kb.append([
                 InlineKeyboardButton("✅ Approve All", callback_data=f"approve_all_{uid}"),
                 InlineKeyboardButton("❌ Reject All", callback_data=f"reject_all_{uid}")
@@ -1446,10 +1537,18 @@ Page {page + 1} of {total_pages}
             # Individual Gmail buttons
             for gmail in gmails:
                 gid = gmail['id']
-                kb.append([
-                    InlineKeyboardButton(f"✅ Approve #{gid}", callback_data=f"approve_{gid}_{uid}_{page}"),
-                    InlineKeyboardButton(f"❌ Reject #{gid}", callback_data=f"reject_{gid}_{uid}_{page}")
-                ])
+                status = gmail['status']
+                
+                row = []
+                
+                # Only show "Send to Review" for pending gmails
+                if status == 'pending':
+                    row.append(InlineKeyboardButton(f"📤 #{gid}", callback_data=f"send_review_{gid}_{uid}_{page}"))
+                
+                row.append(InlineKeyboardButton(f"✅ #{gid}", callback_data=f"approve_{gid}_{uid}_{page}"))
+                row.append(InlineKeyboardButton(f"❌ #{gid}", callback_data=f"reject_{gid}_{uid}_{page}"))
+                
+                kb.append(row)
             
             # Pagination buttons
             nav_buttons = []
@@ -1469,6 +1568,91 @@ Page {page + 1} of {total_pages}
             await q.answer("User not found", show_alert=True)
             q.data = "gmail_queue_0"
             await callback(update, context)
+    
+    # SEND SINGLE GMAIL TO REVIEW
+    elif d.startswith("send_review_") and not d.startswith("send_review_all_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        gid = int(parts[2])
+        uid = int(parts[3])
+        page = validate_page(parts[4]) if len(parts) > 4 else 0
+        
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                
+                # ATOMIC UPDATE - Only change pending to in_review
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='in_review', worker_sent_date=%s 
+                    WHERE id=%s AND status='pending'
+                    RETURNING email
+                """, (datetime.now().isoformat(), gid))
+                
+                result = c.fetchone()
+                
+                if not result:
+                    await q.answer("Already processed or not pending", show_alert=True)
+                    return
+                
+                email = result['email']
+                conn.commit()
+                
+                log_audit("send_to_review", ADMIN_ID, uid, f"Gmail #{gid} - {email}")
+                
+                await q.answer(f"✅ Gmail #{gid} marked as In Review", show_alert=False)
+                
+                # Refresh the page
+                q.data = f'user_gmail_{uid}_{page}'
+                await callback(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error sending gmail {gid} to review: {e}")
+            await q.answer("Error occurred", show_alert=True)
+    
+    # SEND ALL PENDING GMAILS TO REVIEW
+    elif d.startswith("send_review_all_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        uid = int(parts[3])
+        page = validate_page(parts[4]) if len(parts) > 4 else 0
+        
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                
+                # Get count first
+                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+                count = list(c.fetchone().values())[0]
+                
+                if count == 0:
+                    await q.answer("No pending Gmail found", show_alert=True)
+                    return
+                
+                # ATOMIC BATCH UPDATE
+                c.execute("""
+                    UPDATE gmail 
+                    SET status='in_review', worker_sent_date=%s 
+                    WHERE user_id=%s AND status='pending'
+                """, (datetime.now().isoformat(), uid))
+                
+                conn.commit()
+                
+                log_audit("send_all_to_review", ADMIN_ID, uid, f"{count} gmails sent to review")
+                
+                await q.answer(f"✅ {count} Gmail(s) marked as In Review", show_alert=True)
+                
+                # Refresh the page
+                q.data = f'user_gmail_{uid}_{page}'
+                await callback(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error sending all gmails to review for user {uid}: {e}")
+            await q.answer("Error occurred", show_alert=True)
 
     # APPROVE SINGLE GMAIL - IDEMPOTENT & ATOMIC
     elif d.startswith("approve_") and not d.startswith("approve_all_"):
@@ -1481,11 +1665,12 @@ Page {page + 1} of {total_pages}
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE
+                # ATOMIC UPDATE - Allow approval from both pending and in_review
+                # 🔥 FIXED: Now only updates the SPECIFIC gmail with this ID
                 c.execute("""
                     UPDATE gmail 
                     SET status='approved', review_date=%s 
-                    WHERE id=%s AND status='pending'
+                    WHERE id=%s AND status IN ('pending', 'in_review')
                     RETURNING user_id, reward, email
                 """, (datetime.now().isoformat(), gid))
                 
@@ -1561,11 +1746,12 @@ Page {page + 1} of {total_pages}
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # ATOMIC UPDATE
+                # ATOMIC UPDATE - Allow rejection from both pending and in_review
+                # ✅ This one is CORRECT - it already uses WHERE id=%s
                 c.execute("""
                     UPDATE gmail 
                     SET status='rejected', review_date=%s, rejection_reason=%s 
-                    WHERE id=%s AND status='pending'
+                    WHERE id=%s AND status IN ('pending', 'in_review')
                     RETURNING user_id, email
                 """, (datetime.now().isoformat(), "Wrong Password or Invalid Account", gid))
                 
@@ -1604,8 +1790,8 @@ Page {page + 1} of {total_pages}
             with get_db() as conn:
                 c = conn.cursor()
                 
-                # Get all pending gmails
-                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+                # Get all pending AND in_review gmails
+                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status IN ('pending', 'in_review')", (uid,))
                 gmails = c.fetchall()
                 
                 if not gmails:
@@ -1696,7 +1882,8 @@ Page {page + 1} of {total_pages}
             with get_db() as conn:
                 c = conn.cursor()
                 
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+                # Count BOTH pending and in_review
+                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status IN ('pending', 'in_review')", (uid,))
                 count = list(c.fetchone().values())[0]
                 
                 if count == 0:
@@ -1705,11 +1892,11 @@ Page {page + 1} of {total_pages}
                     await callback(update, context)
                     return
                 
-                # ATOMIC BATCH UPDATE
+                # ATOMIC BATCH UPDATE - Allow rejection from both pending and in_review
                 c.execute("""
                     UPDATE gmail 
                     SET status='rejected', review_date=%s, rejection_reason=%s 
-                    WHERE user_id=%s AND status='pending'
+                    WHERE user_id=%s AND status IN ('pending', 'in_review')
                 """, (datetime.now().isoformat(), "Quality issues", uid))
                 
                 conn.commit()
