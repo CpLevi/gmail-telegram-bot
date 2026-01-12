@@ -821,9 +821,15 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      (q.from_user.id,))
             result = c.fetchone()
             
+            # Get pending amount
             c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='pending'", 
                      (q.from_user.id,))
             pending = float(c.fetchone().values().__iter__().__next__() or 0)
+            
+            # Get in_review amount
+            c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='in_review'", 
+                     (q.from_user.id,))
+            in_review = float(c.fetchone().values().__iter__().__next__() or 0)
             
             # Get weekly stats
             c.execute("""
@@ -839,13 +845,19 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_label = get_user_status_label(q.from_user.id)
         progress_msg = get_weekly_progress_message(q.from_user.id)
         
+        # Calculate total pending (pending + in_review)
+        total_pending = pending + in_review
+        
         text = f"""Balance: ₹{bal:.2f}
 
 Status: {status_label}
 Current rate: ₹{rate} per account
 {progress_msg}
 
-Pending verification: ₹{pending:.2f}
+Under verification:
+⏳ Pending review: ₹{pending:.2f}
+🔍 In review: ₹{in_review:.2f}
+💰 Total: ₹{total_pending:.2f}
 
 Statistics:
 Approved (all time): {approved}
