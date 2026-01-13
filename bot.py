@@ -2088,7 +2088,7 @@ Payment info: {info}
         ]
         
         await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
-    
+
     # APPROVE EXECUTION (AFTER CONFIRMATION)
     elif d.startswith("withdraw_approve_confirm_"):
         if q.from_user.id != ADMIN_ID:
@@ -2138,8 +2138,65 @@ Payment info: {info}
         except Exception as e:
             logger.error(f"Error approving withdrawal {wid}: {e}")
             await q.answer("Error occurred", show_alert=True)
+
+            # REJECT CONFIRMATION SCREEN (NEW - ADD THIS)
+    elif d.startswith("withdraw_reject_") and not d.startswith("withdraw_reject_confirm_"):
+        if q.from_user.id != ADMIN_ID:
+            return
+        
+        parts = d.split("_")
+        wid = int(parts[2])
+        page = int(parts[3]) if len(parts) > 3 else 0
+        
+        # Get withdrawal details
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT w.amount, w.fee, w.final_amount, w.method, w.payment_info,
+                         u.first_name, u.username, u.user_id
+                         FROM withdrawals w JOIN users u ON w.user_id = u.user_id
+                         WHERE w.id=%s AND w.status='pending'""", (wid,))
+            result = c.fetchone()
+        
+        if not result:
+            await q.answer("Withdrawal already processed", show_alert=True)
+            q.data = f"withdrawal_queue_{page}"
+            await callback(update, context)
+            return
+        
+        amount = float(result['amount'])
+        final_amount = float(result['final_amount'])
+        method = result['method']
+        info = result['payment_info']
+        name = result['first_name']
+        username = result['username']
+        uid = result['user_id']
+        
+        text = f"""⚠️ Confirm Withdrawal Rejection
+
+Withdrawal ID: #{wid}
+User: {name} (@{username or 'N/A'})
+User ID: {uid}
+
+Amount: ₹{amount:.2f}
+Final amount: ₹{final_amount:.2f}
+Method: {method.upper()}
+Payment info: {info}
+
+💰 Amount will be refunded to user balance
+
+⚠️ Choose rejection reason:"""
+        
+        kb = [
+            [InlineKeyboardButton("❌ Invalid Payment Info", callback_data=f"withdraw_reject_confirm_{wid}_{page}_invalid")],
+            [InlineKeyboardButton("❌ Duplicate Request", callback_data=f"withdraw_reject_confirm_{wid}_{page}_duplicate")],
+            [InlineKeyboardButton("❌ Suspicious Activity", callback_data=f"withdraw_reject_confirm_{wid}_{page}_suspicious")],
+            [InlineKeyboardButton("❌ Other Reason", callback_data=f"withdraw_reject_confirm_{wid}_{page}_other")],
+            [InlineKeyboardButton("🔙 Cancel", callback_data=f"withdrawal_queue_{page}")]
+        ]
+        
+        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
     
-    # REJECT EXECUTION (AFTER CONFIRMATION)
+    # REJECT EXECUTION (AFTER CONFIRMATION) - FIXED
     elif d.startswith("withdraw_reject_confirm_"):
         if q.from_user.id != ADMIN_ID:
             return
@@ -2162,6 +2219,7 @@ Payment info: {info}
             with get_db() as conn:
                 c = conn.cursor()
                 
+                # ATOMIC UPDATE - Only reject if status is 'pending' (prevents double refund)
                 c.execute("""
                     UPDATE withdrawals 
                     SET status='rejected', processed_date=%s, rejection_reason=%s 
@@ -2179,11 +2237,13 @@ Payment info: {info}
                 
                 uid, amount = result['user_id'], round_decimal(result['amount'])
                 
+                # ATOMIC REFUND - Add amount back to user balance
                 c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
                 conn.commit()
                 
                 log_audit("reject_withdrawal", ADMIN_ID, uid, f"Withdrawal #{wid} - ₹{float(amount):.2f} refunded - {rejection_reason}")
                 
+                # Notify user
                 await notify_user(context, uid,
                     f"Withdrawal rejected\n\n"
                     f"Withdrawal ID: #{wid}\n"
@@ -2194,13 +2254,14 @@ Payment info: {info}
                 
                 await q.answer("❌ Withdrawal rejected and refunded", show_alert=True)
                 
+                # Return to withdrawal queue at current position
                 q.data = f"withdrawal_queue_{page}"
                 await callback(update, context)
                 
         except Exception as e:
             logger.error(f"Error rejecting withdrawal {wid}: {e}")
             await q.answer("Error occurred", show_alert=True)
-
+            
 # USER MANAGEMENT
     elif d == "user_mgmt" and q.from_user.id == ADMIN_ID:
         await q.edit_message_text("User Management\n\nSend user ID\n\n/cancel to abort", parse_mode=None)
