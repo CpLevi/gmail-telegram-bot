@@ -2,3 +2,6 @@ database.db
 database_backup*.db
 .env
 __pycache__/
+*.pyc
+.DS_Store
+bot_old_backup.py
