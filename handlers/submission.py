@@ -293,11 +293,13 @@ async def handle_bulk_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     for idx, (gid, task) in enumerate(saved_ids, 1):
+        gender_label = "Male" if task['gender'] == 'M' else "Female"
         text += (
-            f"\n{idx}️⃣ <b>#{gid}</b>\n"
-            f"  👤 <code>{task['first_name']} {task['last_name']}</code> ({'M' if task['gender'] == 'M' else 'F'}), DOB: {task['dob']}\n"
-            f"  📧 <code>{task['email']}</code>\n"
-            f"  🔑 <code>{task['password']}</code>\n"
+            f"\n{idx}️⃣  <b>#{gid}</b>\n"
+            f"👤 <code>{task['first_name']} {task['last_name']}</code>\n"
+            f"🎂 {task['dob']}  |  ⚧️ {gender_label}\n"
+            f"📧 <code>{task['email']}</code>\n"
+            f"🔑 <code>{task['password']}</code>\n"
         )
 
     text += (
