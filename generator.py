@@ -149,45 +149,55 @@ def _generate_dob(min_age=21, max_age=40):
     return dob_str, birth_year
 
 
-def _generate_email_username(first_name: str, last_name: str) -> str:
+def _generate_email_username(first_name: str, last_name: str, birth_year: int) -> str:
     """
-    Generate a realistic, clean email username.
-    Only 0-2 numbers to keep it creatable.
+    Generate a unique, professional email username.
+    Uses birth year + small numbers to stay available on Gmail
+    while looking natural and human-made.
     """
     fn = first_name.lower()
     ln = last_name.lower()
 
-    d1 = str(random.randint(1, 9))
-    d2 = str(random.randint(10, 99))
+    yr = str(birth_year)[-2:]           # "98" from 1998
+    yr4 = str(birth_year)               # "1998"
+    d2 = str(random.randint(10, 99))    # "47"
+    d3 = str(random.randint(100, 999))  # "347"
+    d1 = str(random.randint(1, 9))      # "7"
 
     patterns = [
-        # With 1 number (most common)
-        f"{fn}.{ln}{d1}",
-        f"{fn}{ln}{d1}",
-        f"{fn}.{d1}{ln}",
-        f"{fn}{d1}.{ln}",
-        f"{fn}{d1}{ln}",
+        # Birth year patterns (most natural — looks human-made)
+        f"{fn}.{ln}{yr}",               # john.smith98
+        f"{fn}{ln}{yr}",                # johnsmith98
+        f"{fn}.{ln}.{yr}",             # john.smith.98
+        f"{fn}{yr}{ln}",               # john98smith
+        f"{fn}.{yr}.{ln}",             # john.98.smith
 
-        # With 2 numbers
-        f"{fn}.{ln}{d2}",
-        f"{fn}{ln}{d2}",
-        f"{fn}{d2}{ln}",
+        # Birth year + small digit (very unique)
+        f"{fn}.{ln}{yr}{d1}",           # john.smith987
+        f"{fn}{ln}{yr}{d1}",            # johnsmith987
+        f"{fn}{d1}{ln}{yr}",            # john7smith98
 
-        # Zero numbers
-        f"{fn}.{ln}",
-        f"{fn}{ln}",
+        # 3-digit number patterns (unique, still clean)
+        f"{fn}.{ln}{d3}",               # john.smith347
+        f"{fn}{ln}{d3}",                # johnsmith347
+        f"{fn}{d3}{ln}",                # john347smith
 
-        # Initial patterns
-        f"{fn[0]}.{ln}{d1}",
-        f"{fn}.{ln[0]}{d2}",
-        f"{fn}{ln[0]}{d1}",
+        # Full year patterns (very unique)
+        f"{fn}{yr4}",                   # john1998
+        f"{fn}.{ln}{yr4}",             # john.smith1998
+
+        # Initial + year combos
+        f"{fn}.{ln[0]}{yr}",            # john.s98
+        f"{fn[0]}{ln}{yr}",             # jsmith98
+        f"{fn}{ln[0]}{yr}{d1}",         # johns987
     ]
 
     weights = [
-        15, 12, 10, 10, 10,    # 1-number (57%)
-        8, 8, 7,                # 2-number (23%)
-        4, 3,                   # 0-number (7%)
-        5, 5, 3,                # initial (13%)
+        18, 15, 12, 8, 6,       # birth year (59%)
+        7, 5, 4,                 # year+digit (16%)
+        5, 4, 3,                 # 3-digit (12%)
+        3, 2,                    # full year (5%)
+        3, 3, 2,                 # initials (8%)
     ]
 
     return random.choices(patterns, weights=weights, k=1)[0]
@@ -241,7 +251,7 @@ def generate_single_task(user_id: int) -> dict:
 
         dob_str, birth_year = _generate_dob(21, 40)
 
-        email_user = _generate_email_username(first_name, last_name)
+        email_user = _generate_email_username(first_name, last_name, birth_year)
         email = f"{email_user}@gmail.com"
 
         if _is_email_taken(email):
