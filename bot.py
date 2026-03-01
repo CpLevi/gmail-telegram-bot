@@ -39,6 +39,7 @@ from handlers.admin import (
     receive_wallet_amount, receive_wallet_reason,
     receive_new_price,
 )
+from utils import ensure_user_exists
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -59,6 +60,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle unrecognized text messages."""
+    ensure_user_exists(update.effective_user)
     text = update.message.text.lower().strip()
 
     if text in ['start', 'menu', 'hi', 'hello', 'hey']:
@@ -183,6 +185,9 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     if not q or not q.data:
         return
+
+    # Auto-register old users who interact without hitting /start
+    ensure_user_exists(q.from_user)
 
     route = route_callback(q.data)
 

@@ -193,6 +193,29 @@ def notifications_enabled(user_id):
         return True
 
 
+def ensure_user_exists(user):
+    """Auto-register user if they don't exist in the database.
+
+    Catches old users who interact with the bot without hitting /start
+    on the new database. Uses INSERT ... ON CONFLICT DO NOTHING to be
+    safe for concurrent calls.
+    """
+    if not user:
+        return
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""INSERT INTO users (user_id, username, first_name, joined_date)
+                         VALUES (%s, %s, %s, %s)
+                         ON CONFLICT (user_id) DO UPDATE SET
+                         username = EXCLUDED.username,
+                         first_name = EXCLUDED.first_name""",
+                      (user.id, user.username, user.first_name,
+                       datetime.now().isoformat()))
+    except Exception as e:
+        logger.error(f"ensure_user_exists error for {user.id}: {e}")
+
+
 # ==================== NOTIFICATIONS ====================
 
 async def notify_user(context, user_id, message):
