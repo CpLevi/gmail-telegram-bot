@@ -150,7 +150,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Get the specific submission
             c.execute("""SELECT id, email, password, reward, submit_date, status,
-                        task_id, assigned_first_name, assigned_last_name, assigned_age,
+                        task_id, assigned_first_name, assigned_last_name, assigned_dob,
                         assigned_email, assigned_password
                         FROM gmail WHERE user_id=%s AND status IN ('pending', 'in_review')
                         ORDER BY submit_date ASC
@@ -181,7 +181,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += (
                 f"━━━━ 📝 <b>ASSIGNED TASK</b> ━━━━\n"
                 f"👤 Name: <code>{gmail['assigned_first_name']} {gmail.get('assigned_last_name', '')}</code>\n"
-                f"🎂 Age: <code>{gmail.get('assigned_age', 'N/A')}</code>\n"
+                f"🎂 DOB: <code>{gmail.get('assigned_dob', 'N/A')}</code>\n"
                 f"📧 Email: <code>{gmail.get('assigned_email', 'N/A')}</code>\n"
                 f"🔑 Password: <code>{gmail.get('assigned_password', 'N/A')}</code>\n\n"
                 f"━━━━ ✅ <b>SUBMITTED</b> ━━━━━━━\n"
