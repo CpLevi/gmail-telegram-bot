@@ -41,8 +41,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM users")
             users = list(c.fetchone().values())[0]
-            c.execute("""SELECT COUNT(*) FROM gmail WHERE status='pending'
-                         AND (task_status = 'confirmed' OR task_id IS NULL)""")
+            c.execute("""SELECT COUNT(*) FROM gmail g
+                         JOIN users u ON g.user_id = u.user_id
+                         WHERE g.status='pending'
+                         AND (g.task_status = 'confirmed' OR g.task_id IS NULL)""")
             pg = list(c.fetchone().values())[0]
             c.execute("SELECT COUNT(*) FROM gmail WHERE status='in_review'")
             ir = list(c.fetchone().values())[0]
@@ -80,10 +82,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db() as conn:
             c = conn.cursor()
 
-            # Count ONLY pending (not in_review)
-            c.execute("""SELECT COUNT(*) FROM gmail
-                         WHERE status = 'pending'
-                         AND (task_status = 'confirmed' OR task_id IS NULL)""")
+            # Count ONLY pending (not in_review) — use JOIN to match user listing
+            c.execute("""SELECT COUNT(*) FROM gmail g
+                         JOIN users u ON g.user_id = u.user_id
+                         WHERE g.status = 'pending'
+                         AND (g.task_status = 'confirmed' OR g.task_id IS NULL)""")
             total_all = list(c.fetchone().values())[0]
 
             # Users with pending submissions
@@ -1143,6 +1146,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if result:
             status = "🚫 Blocked" if result['is_blocked'] else "✅ Active"
+            joined_display = result['joined_date'][:10] if result['joined_date'] else "N/A"
             text = (
                 f"👤 <b>User Info</b>\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -1152,7 +1156,7 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"📊 Status: {status}\n\n"
                 f"💰 Balance: ₹{float(result['balance']):.2f}\n"
                 f"📧 Gmail: {result['approved_gmail']}/{result['total_gmail']}\n"
-                f"📅 Joined: {result['joined_date'][:10]}\n"
+                f"📅 Joined: {joined_display}\n"
                 f"━━━━━━━━━━━━━━━━━━━━"
             )
 
@@ -1165,7 +1169,27 @@ async def receive_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE
             ]
             await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
         else:
-            await update.message.reply_text("❌ User not found", parse_mode="HTML")
+            # Check for orphaned gmail records (user submitted gmail but not in users table)
+            with get_db() as conn2:
+                c2 = conn2.cursor()
+                c2.execute("""SELECT status, COUNT(*) as cnt FROM gmail
+                              WHERE user_id=%s GROUP BY status""", (uid,))
+                orphaned = c2.fetchall()
+
+            if orphaned:
+                status_summary = ", ".join([f"{r['status']}: {r['cnt']}" for r in orphaned])
+                total_orphaned = sum(r['cnt'] for r in orphaned)
+                text = (
+                    f"⚠️ <b>Orphaned Records Found</b>\n\n"
+                    f"🆔 ID: <code>{uid}</code>\n"
+                    f"User NOT registered in the bot, but has <b>{total_orphaned}</b> gmail submissions.\n\n"
+                    f"📊 Breakdown: {status_summary}\n\n"
+                    f"<i>These submissions exist but the user never started the bot or their record is missing.</i>"
+                )
+                kb = [[InlineKeyboardButton("🔙 Back", callback_data="admin")]]
+                await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+            else:
+                await update.message.reply_text("❌ User not found", parse_mode="HTML")
 
         return ConversationHandler.END
     except Exception as e:

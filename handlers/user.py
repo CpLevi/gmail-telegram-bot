@@ -431,6 +431,7 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             upi = result['upi_id']
             joined = result['joined_date']
             rate = float(calc_rate(q.from_user.id))
+            joined_display = joined[:10] if joined else "N/A"
 
             text = (
                 f"👤 <b>Profile</b>\n\n"
@@ -445,7 +446,7 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💳 <b>Payment Methods</b>\n"
                 f"├ 📱 UPI: {'✅ Set' if upi else '❌ Not set'}\n"
                 f"└ 💎 USDT: {'✅ Set' if usdt else '❌ Not set'}\n\n"
-                f"📅 <b>Joined:</b> {joined[:10]}"
+                f"📅 <b>Joined:</b> {joined_display}"
             )
 
             kb = [
