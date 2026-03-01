@@ -293,9 +293,9 @@ def save_task_to_db(user_id: int, task: dict, reward) -> int | None:
                 INSERT INTO gmail (
                     user_id, email, password, reward, submit_date,
                     status, task_id, assigned_first_name, assigned_last_name,
-                    assigned_dob, assigned_email, assigned_password,
+                    assigned_dob, assigned_gender, assigned_email, assigned_password,
                     task_status, task_assigned_at, batch_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
                 user_id,
@@ -308,6 +308,7 @@ def save_task_to_db(user_id: int, task: dict, reward) -> int | None:
                 task["first_name"],
                 task["last_name"],
                 task["dob"],
+                task["gender"],
                 task["email"],
                 task["password"],
                 "assigned",

@@ -92,6 +92,7 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 <b>First Name:</b>  <code>{task['first_name']}</code>\n"
         f"👤 <b>Last Name:</b>   <code>{task['last_name']}</code>\n"
         f"🎂 <b>DOB:</b>        <code>{task['dob']}</code>\n"
+        f"⚧️ <b>Gender:</b>     <code>{'Male' if task['gender'] == 'M' else 'Female'}</code>\n"
         f"📧 <b>Email:</b>       <code>{task['email']}</code>\n"
         f"🔑 <b>Password:</b>    <code>{task['password']}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -294,7 +295,7 @@ async def handle_bulk_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for idx, (gid, task) in enumerate(saved_ids, 1):
         text += (
             f"\n{idx}️⃣ <b>#{gid}</b>\n"
-            f"  👤 <code>{task['first_name']} {task['last_name']}</code>, DOB: {task['dob']}\n"
+            f"  👤 <code>{task['first_name']} {task['last_name']}</code> ({'M' if task['gender'] == 'M' else 'F'}), DOB: {task['dob']}\n"
             f"  📧 <code>{task['email']}</code>\n"
             f"  🔑 <code>{task['password']}</code>\n"
         )
