@@ -373,7 +373,7 @@ async def handle_bulk_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         )
     else:
-        await q.answer("⚠️ Tasks already processed", show_alert=True)
+        await q.answer("⚠️ Tasks already processed or expired", show_alert=True)
 
 
 async def handle_bulk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):

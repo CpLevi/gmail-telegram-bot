@@ -6,6 +6,7 @@ Supports both polling (local dev) and webhook (Railway production).
 import os
 import asyncio
 import logging
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -18,6 +19,7 @@ from config import (
     BROADCAST_MSG, USER_SEARCH,
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE,
     TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
+    SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
 )
 from database import get_db, init_db
 
@@ -135,9 +137,109 @@ async def auto_message_worker(app: Application):
         await asyncio.sleep(6 * 60 * 60)
 
 
+async def task_expiry_worker(app: Application):
+    """Check for expired tasks every 2 minutes, mark them expired, and notify users."""
+    await asyncio.sleep(60)  # wait for bot startup
+
+    while True:
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                now = datetime.now()
+
+                # Find expired SINGLE tasks (batch_id IS NULL)
+                single_cutoff = (now - timedelta(minutes=SINGLE_TASK_EXPIRY_MINUTES)).isoformat()
+                c.execute("""
+                    SELECT id, user_id, task_id, assigned_email
+                    FROM gmail
+                    WHERE task_status = 'assigned'
+                      AND batch_id IS NULL
+                      AND task_assigned_at < %s
+                """, (single_cutoff,))
+                expired_singles = c.fetchall()
+
+                # Find expired BULK tasks (batch_id IS NOT NULL)
+                bulk_cutoff = (now - timedelta(minutes=BULK_TASK_EXPIRY_MINUTES)).isoformat()
+                c.execute("""
+                    SELECT id, user_id, task_id, batch_id, assigned_email
+                    FROM gmail
+                    WHERE task_status = 'assigned'
+                      AND batch_id IS NOT NULL
+                      AND task_assigned_at < %s
+                """, (bulk_cutoff,))
+                expired_bulks = c.fetchall()
+
+                all_expired = list(expired_singles) + list(expired_bulks)
+
+                if not all_expired:
+                    await asyncio.sleep(120)
+                    continue
+
+                # Mark all expired
+                expired_ids = [row['id'] for row in all_expired]
+                c.execute(f"""
+                    UPDATE gmail SET task_status = 'expired'
+                    WHERE id IN ({','.join(['%s'] * len(expired_ids))})
+                """, expired_ids)
+
+                # Decrement total_gmail per user
+                user_counts = {}
+                for row in all_expired:
+                    uid = row['user_id']
+                    user_counts[uid] = user_counts.get(uid, 0) + 1
+
+                for uid, count in user_counts.items():
+                    c.execute("""
+                        UPDATE users SET total_gmail = GREATEST(total_gmail - %s, 0)
+                        WHERE user_id = %s
+                    """, (count, uid))
+
+            # Notify users (outside DB transaction)
+            # Group by user to send one message per user
+            user_tasks = {}
+            for row in all_expired:
+                uid = row['user_id']
+                if uid not in user_tasks:
+                    user_tasks[uid] = []
+                user_tasks[uid].append(row)
+
+            for uid, tasks in user_tasks.items():
+                try:
+                    if len(tasks) == 1:
+                        text = (
+                            f"⏰ <b>Task Expired</b>\n\n"
+                            f"Your task <code>{tasks[0]['task_id']}</code> has expired "
+                            f"because it was not completed within <b>{SINGLE_TASK_EXPIRY_MINUTES} minutes</b>.\n\n"
+                            f"No penalty — you can get a new task anytime."
+                        )
+                    else:
+                        text = (
+                            f"⏰ <b>{len(tasks)} Tasks Expired</b>\n\n"
+                            f"Your bulk tasks have expired because they were not "
+                            f"completed within the time limit.\n\n"
+                            f"No penalty — you can get new tasks anytime."
+                        )
+
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Get New Task", callback_data="get_task")],
+                        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                    ])
+                    await app.bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+                except Exception:
+                    pass
+
+            logger.info(f"⏰ Expired {len(all_expired)} tasks for {len(user_tasks)} users")
+
+        except Exception as e:
+            logger.error(f"Task expiry worker error: {e}")
+
+        await asyncio.sleep(120)  # check every 2 minutes
+
+
 async def post_init(application):
     """Runs after bot starts and event loop is ready."""
     application.create_task(auto_message_worker(application))
+    application.create_task(task_expiry_worker(application))
 
 
 # ==================== CALLBACK ROUTER ====================

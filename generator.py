@@ -400,18 +400,28 @@ def skip_task(task_id: str) -> bool:
     try:
         with get_db() as conn:
             c = conn.cursor()
+            # Fetch user_id BEFORE deleting the row
+            c.execute("""
+                SELECT user_id FROM gmail
+                WHERE task_id = %s AND task_status = 'assigned'
+            """, (task_id,))
+            row = c.fetchone()
+            if not row:
+                return False
+
+            uid = row['user_id']
+
             c.execute("""
                 DELETE FROM gmail
                 WHERE task_id = %s AND task_status = 'assigned'
-                RETURNING id
             """, (task_id,))
-            result = c.fetchone()
-            if result:
-                c.execute("""
-                    UPDATE users SET total_gmail = GREATEST(total_gmail - 1, 0)
-                    WHERE user_id = (SELECT user_id FROM gmail WHERE task_id = %s)
-                """, (task_id,))
-            return result is not None
+
+            c.execute("""
+                UPDATE users SET total_gmail = GREATEST(total_gmail - 1, 0)
+                WHERE user_id = %s
+            """, (uid,))
+
+            return True
     except Exception as e:
         logger.error(f"Error skipping task {task_id}: {e}")
         return False
