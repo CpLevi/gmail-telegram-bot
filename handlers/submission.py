@@ -99,6 +99,7 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 <b>Reward:</b> ₹{float(reward):.2f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⚠️ <b>Create the Gmail account EXACTLY as shown above.</b>\n"
+        f"🚫 <b>You MUST remove the account from your device after creating it, otherwise it will be considered invalid.</b>\n"
         f"⏰ You have <b>{SINGLE_TASK_EXPIRY_MINUTES} minutes</b> to complete.\n\n"
         f"📝 <i>Tap the details to copy them!</i>"
     )
@@ -306,7 +307,8 @@ async def handle_bulk_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Total Reward:</b> ₹{total_reward:.2f} (₹{float(reward):.0f} × {len(saved_ids)})\n"
         f"⏰ Complete within <b>{BULK_TASK_EXPIRY_MINUTES // 60} hours</b>\n\n"
-        f"⚠️ <b>Create ALL accounts EXACTLY as shown!</b>"
+        f"⚠️ <b>Create ALL accounts EXACTLY as shown!</b>\n"
+        f"🚫 <b>You MUST remove each account from your device after creating it, otherwise it will be considered invalid.</b>"
     )
 
     kb = [
