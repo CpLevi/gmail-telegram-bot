@@ -17,6 +17,7 @@ from database import get_db
 from utils import (
     can_submit_gmail, update_submit_time, calc_rate, mask_email,
     safe_edit_or_reply, is_blocked, notify_user,
+    is_task_submission_enabled,
 )
 from generator import generate_single_task, generate_bulk_tasks, save_task_to_db, confirm_task, skip_task
 
@@ -30,6 +31,18 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+
+    # Check if task submission is enabled
+    if not is_task_submission_enabled():
+        await safe_edit_or_reply(
+            q,
+            "🚫 <b>Task Submission Paused</b>\n\n"
+            "Task submissions are currently paused by the admin.\n"
+            "Please check back later.\n\n"
+            "💡 <i>You'll be able to get tasks once submissions resume.</i>",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]),
+        )
+        return
 
     if is_blocked(uid):
         await q.answer("Your account is blocked", show_alert=True)
@@ -185,6 +198,18 @@ async def handle_bulk_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     uid = q.from_user.id
+
+    # Check if task submission is enabled
+    if not is_task_submission_enabled():
+        await safe_edit_or_reply(
+            q,
+            "🚫 <b>Task Submission Paused</b>\n\n"
+            "Task submissions are currently paused by the admin.\n"
+            "Please check back later.\n\n"
+            "💡 <i>You'll be able to get tasks once submissions resume.</i>",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]),
+        )
+        return
 
     if is_blocked(uid):
         await q.answer("Your account is blocked", show_alert=True)

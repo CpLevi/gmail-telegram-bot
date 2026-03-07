@@ -255,7 +255,7 @@ def route_callback(data: str) -> str:
         "withdrawal_queue", "withdraw_approve", "withdraw_reject",
         "user_mgmt", "broadcast", "stats",
         "block_", "wallet_confirm_", "wallet_cancel",
-        "admin_settings", "set_price",
+        "admin_settings", "set_price", "toggle_tasks",
     ]
     submission_prefixes = [
         "get_task", "task_done_", "task_skip_",

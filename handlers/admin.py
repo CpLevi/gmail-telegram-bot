@@ -19,6 +19,7 @@ from database import get_db
 from utils import (
     validate_page, round_decimal, log_audit, notify_user,
     safe_edit_or_reply, mask_email, get_gmail_rate, set_gmail_rate,
+    is_task_submission_enabled, set_task_submission,
 )
 
 logger = logging.getLogger(__name__)
@@ -947,19 +948,48 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── ADMIN SETTINGS ──
     elif d == "admin_settings":
         current_rate = float(get_gmail_rate())
+        tasks_enabled = is_task_submission_enabled()
+        status_icon = "✅" if tasks_enabled else "🔴"
+        status_text = "Active" if tasks_enabled else "Paused"
+        toggle_label = "🔴 Disable Task Submission" if tasks_enabled else "🟢 Enable Task Submission"
+
         text = (
             f"⚙️ <b>Bot Settings</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Gmail Rate:</b> ₹{current_rate:.0f}/account\n"
+            f"📋 <b>Task Submission:</b> {status_icon} {status_text}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"This rate applies to <b>all users</b>.\n"
-            f"Change it anytime below."
+            f"Rate applies to <b>all users</b>.\n"
+            f"Toggle tasks to pause/resume submissions."
         )
         kb = [
             [InlineKeyboardButton(f"💰 Change Price (₹{current_rate:.0f})", callback_data="set_price")],
+            [InlineKeyboardButton(toggle_label, callback_data="toggle_tasks")],
             [InlineKeyboardButton("🔙 Back", callback_data="admin")],
         ]
         await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+
+    # ── TOGGLE TASK SUBMISSION ──
+    elif d == "toggle_tasks":
+        current = is_task_submission_enabled()
+        new_state = not current
+
+        if set_task_submission(new_state):
+            state_word = "enabled" if new_state else "disabled"
+            log_audit("toggle_task_submission", ADMIN_ID, None, f"Task submission {state_word}")
+
+            status_icon = "✅" if new_state else "🔴"
+            status_text = "Active" if new_state else "Paused"
+
+            await q.answer(
+                f"{'✅ Task submissions enabled' if new_state else '🔴 Task submissions disabled'}",
+                show_alert=True
+            )
+            # Refresh settings page
+            q.data = "admin_settings"
+            await admin_callback(update, context)
+        else:
+            await q.answer("❌ Failed to update. Try again.", show_alert=True)
 
     # ── SET PRICE (entry point) ──
     elif d == "set_price":

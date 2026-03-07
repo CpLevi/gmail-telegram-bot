@@ -18,6 +18,7 @@ from utils import (
     is_blocked, notify_user, check_channel,
     calc_rate, get_earnings_stats,
     mask_email, validate_page, safe_edit_or_reply,
+    is_task_submission_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,9 +96,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 <i>Tap \"Get Task\" to start earning!</i>"
     )
 
-    kb = [
-        [InlineKeyboardButton("📋 Get Task", callback_data="get_task")],
-        [InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")],
+    kb = []
+    if is_task_submission_enabled():
+        kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
+        kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
+    else:
+        kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
+    kb += [
         [InlineKeyboardButton("💰 Balance", callback_data="balance"),
          InlineKeyboardButton("📋 History", callback_data="history")],
         [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
@@ -159,9 +164,13 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── MAIN MENU ──
     if d == "menu":
-        kb = [
-            [InlineKeyboardButton("📋 Get Task", callback_data="get_task")],
-            [InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")],
+        kb = []
+        if is_task_submission_enabled():
+            kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
+            kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
+        else:
+            kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
+        kb += [
             [InlineKeyboardButton("💰 Balance", callback_data="balance"),
              InlineKeyboardButton("📋 History", callback_data="history")],
             [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
@@ -454,6 +463,17 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔙 Back", callback_data="menu")],
             ]
             await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+
+    # ── TASKS PAUSED NOTICE ──
+    elif d == "tasks_paused":
+        await safe_edit_or_reply(
+            q,
+            "🚫 <b>Task Submission Paused</b>\n\n"
+            "Task submissions are currently paused by the admin.\n"
+            "Please check back later.\n\n"
+            "💡 <i>You'll be able to get tasks once submissions resume.</i>",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]),
+        )
 
     # ── SETTINGS ──
     elif d == "settings":

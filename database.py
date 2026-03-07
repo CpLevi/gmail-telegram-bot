@@ -160,7 +160,8 @@ def init_db():
             VALUES 
             ('auto_messages_enabled', 'true'),
             ('offers_enabled', 'true'),
-            ('gmail_rate', '20')
+            ('gmail_rate', '20'),
+            ('task_submission_enabled', 'true')
             ON CONFLICT (key) DO NOTHING
         ''')
 

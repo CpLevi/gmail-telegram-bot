@@ -282,6 +282,35 @@ def set_gmail_rate(new_rate):
         return False
 
 
+def is_task_submission_enabled():
+    """Check if task submission is currently enabled."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM system_flags WHERE key='task_submission_enabled'")
+            result = c.fetchone()
+            if result:
+                return result['value'] == 'true'
+    except Exception as e:
+        logger.error(f"Error checking task_submission_enabled: {e}")
+    return True  # default to enabled if flag missing
+
+
+def set_task_submission(enabled: bool):
+    """Enable or disable task submissions. Returns True on success."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO system_flags (key, value) VALUES ('task_submission_enabled', %s)
+                ON CONFLICT (key) DO UPDATE SET value = %s
+            """, ('true' if enabled else 'false', 'true' if enabled else 'false'))
+        return True
+    except Exception as e:
+        logger.error(f"Error setting task_submission: {e}")
+        return False
+
+
 def calc_rate(user_id=None):
     """
     Fixed rate — same for all users.
