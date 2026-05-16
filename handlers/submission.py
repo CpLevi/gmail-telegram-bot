@@ -146,6 +146,144 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to notify admin: {e}")
 
 
+async def handle_get_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry point for 'Get Single Task' keyboard button — generates task directly."""
+    user = update.effective_user
+    uid = user.id
+    chat_id = update.effective_chat.id
+
+    if not is_task_submission_enabled():
+        await context.bot.send_message(
+            chat_id,
+            "🚫 <b>Task Submission Paused</b>\n\n"
+            "Task submissions are currently paused by the admin.\n"
+            "Please check back later.",
+            parse_mode="HTML"
+        )
+        return
+
+    if is_blocked(uid):
+        await context.bot.send_message(chat_id, "⛔ Your account has been blocked.", parse_mode="HTML")
+        return
+
+    can_submit, wait_time = can_submit_gmail(uid)
+    if not can_submit:
+        temp_msg = await context.bot.send_message(
+            chat_id,
+            f"⏳ <b>Cooldown Active</b>\n\n"
+            f"Please wait <b>{wait_time} seconds</b> before getting a new task.",
+            parse_mode="HTML"
+        )
+        await asyncio.sleep(5)
+        try:
+            await temp_msg.delete()
+        except Exception:
+            pass
+        return
+
+    task = generate_single_task(uid)
+    if not task:
+        await context.bot.send_message(
+            chat_id,
+            "⚠️ <b>Task Generation Failed</b>\n\n"
+            "Unable to generate a unique task right now. Please try again.",
+            parse_mode="HTML"
+        )
+        return
+
+    reward = calc_rate(uid)
+    gid = save_task_to_db(uid, task, reward)
+    if not gid:
+        await context.bot.send_message(
+            chat_id, "⚠️ Could not save task. Please try again.", parse_mode="HTML"
+        )
+        return
+
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE users SET total_gmail=total_gmail+1 WHERE user_id=%s", (uid,))
+
+    update_submit_time(uid)
+
+    context.user_data['current_task_id'] = task['task_id']
+    context.user_data['current_task_gid'] = gid
+
+    text = (
+        f"⏳ <b>Review time: {SINGLE_TASK_EXPIRY_MINUTES} min</b> ⏳\n\n"
+        f"📋 <b>Task:</b>  📧  Create Gmail (2FA)\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>First Name:</b>  <code>{task['first_name']}</code>\n"
+        f"👤 <b>Last Name:</b>   <code>{task['last_name']}</code>\n"
+        f"🎂 <b>DOB:</b>          <code>{task['dob']}</code>\n"
+        f"⚧️ <b>Gender:</b>       <code>{'Male' if task['gender'] == 'M' else 'Female'}</code>\n"
+        f"📧 <b>Email:</b>        <code>{task['email']}</code>\n"
+        f"🔑 <b>Password:</b>     <code>{task['password']}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Reward:</b> ₹{float(reward):.2f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚠️ You <b>MUST</b> use the information above to register.\n"
+        f"❌ If you use your own information, your task will be <b>REJECTED</b>.\n\n"
+        f"After registration:\n"
+        f"👉 Click the <b>\"Account Created\"</b> button below\n"
+        f"🔐 Then set up 2FA and send the secret key\n\n"
+        f"📝 <i>Tap the details to copy them!</i>"
+    )
+
+    kb = [
+        [InlineKeyboardButton("✅ Account Created", callback_data=f"task_done_{task['task_id']}")],
+        [InlineKeyboardButton("🎥 Video instruction", callback_data="video_instruction")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"task_skip_{task['task_id']}")],
+    ]
+
+    from handlers.user import get_main_reply_keyboard
+    await context.bot.send_message(
+        chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+    )
+    # Restore main keyboard
+    msg = await context.bot.send_message(chat_id, "📋 New Task Assigned",
+                                         reply_markup=get_main_reply_keyboard())
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    # Notify admin
+    try:
+        admin_text = (
+            f"📋 <b>New Task Assigned</b>\n\n"
+            f"User: {user.first_name} (@{user.username})\n"
+            f"ID: {uid}\n\n"
+            f"Task: #{gid} ({task['task_id']})\n"
+            f"Name: {task['first_name']} {task['last_name']}\n"
+            f"Email: {task['email']}\n"
+            f"Password: {task['password']}\n"
+            f"Reward: ₹{float(reward)}"
+        )
+        await context.bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {e}")
+
+
+async def handle_bulk_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry point for 'Bulk Tasks' keyboard button."""
+    chat_id = update.effective_chat.id
+
+    if not is_bulk_submission_enabled():
+        await context.bot.send_message(
+            chat_id,
+            "🚫 <b>Bulk Submissions Paused</b>\n\nPlease check back later.",
+            parse_mode="HTML"
+        )
+        return
+
+    await context.bot.send_message(
+        chat_id,
+        "📦 <b>Bulk Tasks</b>\n\nHow many accounts? (2-20):\n\n/cancel to abort",
+        parse_mode="HTML"
+    )
+    return BULK_TASK_QTY
+
+
 # ==================== TASK DONE / 2FA FLOW ====================
 
 async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):

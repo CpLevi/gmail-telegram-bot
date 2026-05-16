@@ -38,6 +38,7 @@ from handlers.submission import (
     handle_get_task, handle_task_done, handle_task_skip,
     handle_bulk_task, handle_bulk_qty,
     handle_bulk_done, handle_bulk_cancel,
+    handle_get_task_text, handle_bulk_task_text,
     # 2FA handlers
     receive_totp_secret, handle_totp_refresh, handle_totp_done,
     receive_bulk_totp_secret, handle_bulk_totp_refresh,
@@ -118,25 +119,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     # ── Task keyboard actions ──
     if text == '📋 Get Single Task':
         context.user_data.pop('last_bot_msg', None)
-        await context.bot.send_message(
-            chat_id, "📋 <b>Getting your task...</b>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 Get Task", callback_data="get_task")],
-            ]),
-            parse_mode="HTML"
-        )
+        await handle_get_task_text(update, context)
         return
 
     if text == '📦 Bulk Tasks':
         context.user_data.pop('last_bot_msg', None)
-        await context.bot.send_message(
-            chat_id, "📦 <b>Bulk Tasks</b>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Start Bulk Tasks", callback_data="bulk_task")],
-            ]),
-            parse_mode="HTML"
-        )
-        return
+        result = await handle_bulk_task_text(update, context)
+        return result  # Returns BULK_TASK_QTY state for ConversationHandler
 
     if text == '❌ Cancel':
         context.user_data.pop('last_bot_msg', None)
