@@ -21,12 +21,16 @@ from config import (
     TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
     SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
     TOTP_SECRET, TOTP_BULK_SECRET, ADMIN_SET_VIDEO,
-    COOKIE_INPUT, BULK_COOKIE_INPUT,
 )
 from database import get_db, init_db
 
 # Handlers
-from handlers.user import start, user_callback
+from handlers.user import (
+    start, user_callback,
+    get_main_reply_keyboard, get_task_reply_keyboard,
+    build_balance_content, build_profile_content,
+    build_help_content, build_referral_content, build_leaderboard_content,
+)
 from handlers.submission import (
     handle_get_task, handle_task_done, handle_task_skip,
     handle_bulk_task, handle_bulk_qty,
@@ -35,8 +39,6 @@ from handlers.submission import (
     receive_totp_secret, handle_totp_refresh, handle_totp_done,
     receive_bulk_totp_secret, handle_bulk_totp_refresh,
     handle_bulk_totp_next, handle_bulk_totp_alldone,
-    # Cookie handlers
-    receive_cookie, receive_bulk_cookie,
 )
 from handlers.withdrawal import (
     handle_withdraw, handle_withdraw_method, handle_setup_payment,
@@ -69,72 +71,124 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle persistent keyboard buttons and unrecognized text."""
+    """Handle persistent keyboard buttons — delete user text, show info directly."""
     ensure_user_exists(update.effective_user)
     text = update.message.text.strip()
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
 
-    # Map persistent keyboard buttons to callbacks
-    keyboard_map = {
-        '💰 Balance': 'balance',
-        '📋 Tasks': 'get_task',
-        '💸 Withdraw': 'withdraw',
-        '👤 Profile': 'profile',
-        '🏆 Top': 'referral_leaderboard',
-        '👥 My Referrals': 'referral',
-        '❓ Help': 'help',
-    }
+    # Delete user's keyboard text from chat (keeps it clean)
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
 
-    if text in keyboard_map:
-        callback_data = keyboard_map[text]
-
-        if callback_data == 'get_task':
-            await update.message.reply_text(
-                "📋 <b>Task Options</b>",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📋 Get Single Task", callback_data="get_task")],
-                    [InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")],
-                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                ]),
-                parse_mode="HTML"
-            )
-        elif callback_data == 'withdraw':
-            await update.message.reply_text(
-                "💸 <b>Withdraw</b>\n\nChoose your withdrawal method:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
-                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                ]),
-                parse_mode="HTML"
-            )
-        else:
-            # For balance, profile, help, referral, leaderboard — show a direct button
-            label_map = {
-                'balance': '💰 View Balance',
-                'profile': '👤 View Profile',
-                'referral_leaderboard': '🏆 View Leaderboard',
-                'referral': '👥 My Referrals',
-                'help': '❓ Help & Support',
-            }
-            label = label_map.get(callback_data, callback_data.title())
-            await update.message.reply_text(
-                f"Tap below to continue:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(label, callback_data=callback_data)],
-                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                ]),
-                parse_mode="HTML"
-            )
+    # ── TASKS: Switch to task reply keyboard ──
+    if text == '📋 Tasks':
+        await context.bot.send_message(
+            chat_id,
+            "📋 <b>Task Options</b>\n\nSelect a task type below:",
+            reply_markup=get_task_reply_keyboard(),
+            parse_mode="HTML"
+        )
         return
 
+    # ── Task keyboard actions ──
+    if text == '📋 Get Single Task':
+        # Trigger get_task callback via inline — send a temporary message
+        msg = await context.bot.send_message(
+            chat_id, "⏳ Loading task...",
+            reply_markup=get_main_reply_keyboard()
+        )
+        # Call the handler directly
+        from handlers.submission import handle_get_task
+        # Create a fake update-like call by sending the callback
+        await context.bot.send_message(
+            chat_id, "📋 <b>Getting your task...</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Get Task", callback_data="get_task")],
+            ]),
+            parse_mode="HTML"
+        )
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return
+
+    if text == '📦 Bulk Tasks':
+        await context.bot.send_message(
+            chat_id, "📦 <b>Bulk Tasks</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 Start Bulk Tasks", callback_data="bulk_task")],
+            ]),
+            parse_mode="HTML"
+        )
+        # Restore main keyboard
+        msg = await context.bot.send_message(chat_id, "⌨️", reply_markup=get_main_reply_keyboard())
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return
+
+    if text == '❌ Cancel':
+        await context.bot.send_message(
+            chat_id,
+            "✅ Returned to main menu.",
+            reply_markup=get_main_reply_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    # ── BALANCE: Show directly ──
+    if text == '💰 Balance':
+        content, kb = build_balance_content(user_id)
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        return
+
+    # ── PROFILE: Show directly ──
+    if text == '👤 Profile':
+        content, kb = build_profile_content(user_id)
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        return
+
+    # ── HELP: Show directly ──
+    if text == '❓ Help':
+        content, kb = build_help_content()
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        return
+
+    # ── REFERRALS: Show directly ──
+    if text == '👥 My Referrals':
+        content, kb = build_referral_content(user_id, context.bot.username)
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        return
+
+    # ── LEADERBOARD: Show directly ──
+    if text == '🏆 Top':
+        content, kb = build_leaderboard_content(user_id)
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        return
+
+    # ── WITHDRAW: Show withdraw button ──
+    if text == '💸 Withdraw':
+        await context.bot.send_message(
+            chat_id,
+            "💸 <b>Withdraw</b>\n\nTap below to start:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    # ── Fallback ──
     lower = text.lower()
     if lower in ['start', 'menu', 'hi', 'hello', 'hey']:
         await start(update, context)
-    else:
-        kb = [[InlineKeyboardButton("📋 Main Menu", callback_data="menu")]]
-        await update.message.reply_text(
-            "Use the buttons below to navigate:",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
-        )
+    # Silently ignore unrecognized text (no messy replies)
 
 async def handle_video_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the instruction video to the user."""
@@ -512,7 +566,7 @@ def main():
     )
     app.add_handler(video_conv)
 
-    # ── Single task 2FA + Cookie conversation ──
+    # ── Single task 2FA conversation ──
     totp_single_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(handle_task_done, pattern=r"^task_done_")],
         states={
@@ -521,16 +575,13 @@ def main():
                 CallbackQueryHandler(handle_totp_refresh, pattern=r"^totp_refresh_"),
                 CallbackQueryHandler(handle_totp_done, pattern=r"^totp_done_"),
             ],
-            COOKIE_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookie),
-            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
     )
     app.add_handler(totp_single_conv)
 
-    # ── Bulk task 2FA + Cookie conversation ──
+    # ── Bulk task 2FA conversation ──
     totp_bulk_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(handle_bulk_done, pattern=r"^bulk_done_")],
         states={
@@ -539,9 +590,6 @@ def main():
                 CallbackQueryHandler(handle_bulk_totp_refresh, pattern=r"^btotp_refresh_"),
                 CallbackQueryHandler(handle_bulk_totp_next, pattern=r"^btotp_next_"),
                 CallbackQueryHandler(handle_bulk_totp_alldone, pattern=r"^btotp_alldone_"),
-            ],
-            BULK_COOKIE_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_cookie),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

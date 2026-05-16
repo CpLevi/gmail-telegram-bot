@@ -256,7 +256,7 @@ async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User confirms 2FA is activated — save secret and ask for cookie."""
+    """User confirms 2FA is activated — save secret and submit task."""
     q = update.callback_query
     await q.answer()
     task_id = context.user_data.get('totp_task_id')
@@ -272,57 +272,22 @@ async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c = conn.cursor()
             c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, task_id))
 
-    # Ask for cookie — next step
-    await q.message.reply_text(
-        f"🍪 <b>Please send the account Cookie</b>\n\n"
-        f"Task <code>{task_id}</code>\n\n"
-        f"Open the browser where you created the account and "
-        f"copy the full cookie string.\n\n"
-        f"📋 <i>Paste the cookie below:</i>",
-        parse_mode="HTML"
-    )
-    return COOKIE_INPUT
-
-
-async def receive_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive browser cookie from user, save it, and submit the task."""
-    text = update.message.text.strip()
-    task_id = context.user_data.get('totp_task_id')
-
-    if not task_id:
-        await update.message.reply_text("⚠️ Session expired. Please tap Account Created on your task again.")
-        return ConversationHandler.END
-
-    if len(text) < 10:
-        await update.message.reply_text(
-            "❌ <b>Cookie too short</b>\n\n"
-            "Please paste the full cookie string from the browser.\n\n"
-            "📋 <i>Try again:</i>",
-            parse_mode="HTML"
-        )
-        return COOKIE_INPUT
-
-    # Save cookie to DB
-    with get_db() as conn:
-        c = conn.cursor()
-        c.execute("UPDATE gmail SET cookie=%s WHERE task_id=%s", (text, task_id))
-
     # Confirm the task
     if confirm_task(task_id):
-        await update.message.reply_text(
+        await safe_edit_or_reply(
+            q,
             f"✅ <b>Task Submitted!</b>\n\n"
-            f"Task <code>{task_id}</code> submitted with 2FA + Cookie ✔️\n\n"
+            f"Task <code>{task_id}</code> submitted with 2FA ✔️\n\n"
             f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
             f"You'll be notified when approved or rejected.\n\n"
             f"💡 <i>Tap \"Get Task\" for another one!</i>",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Get Another Task", callback_data="get_task")],
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ]),
-            parse_mode="HTML"
+            ])
         )
     else:
-        await update.message.reply_text("⚠️ Task already processed or expired.")
+        await q.answer("⚠️ Task already processed or expired", show_alert=True)
 
     # Cleanup
     context.user_data.pop('totp_task_id', None)
@@ -702,12 +667,13 @@ async def handle_bulk_totp_next(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def handle_bulk_totp_alldone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """All bulk 2FA secrets collected — now collect cookies per account."""
+    """All bulk 2FA secrets collected — confirm and submit batch."""
     q = update.callback_query
     await q.answer()
     tasks = context.user_data.get('bulk_2fa_tasks', [])
     idx = context.user_data.get('bulk_2fa_index', 0)
     secret = context.user_data.get('bulk_2fa_current_secret')
+    batch_id = context.user_data.get('bulk_2fa_batch_id')
 
     # Save last task's secret
     if secret and tasks and idx < len(tasks):
@@ -716,95 +682,42 @@ async def handle_bulk_totp_alldone(update: Update, context: ContextTypes.DEFAULT
             c = conn.cursor()
             c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, t['task_id']))
 
-    # Reset index for cookie collection phase
-    context.user_data['bulk_cookie_index'] = 0
     context.user_data.pop('bulk_2fa_current_secret', None)
 
-    # Ask for first cookie
-    t = tasks[0]
-    await q.message.reply_text(
-        f"🍪 <b>Cookie Collection — Account 1/{len(tasks)}</b>\n\n"
-        f"📧 <code>{t['email']}</code>\n\n"
-        f"Paste the cookie for this account:",
-        parse_mode="HTML"
-    )
-    return BULK_COOKIE_INPUT
-
-
-async def receive_bulk_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive cookie for a bulk task account."""
-    text = update.message.text.strip()
-    tasks = context.user_data.get('bulk_2fa_tasks', [])
-    idx = context.user_data.get('bulk_cookie_index', 0)
-    batch_id = context.user_data.get('bulk_2fa_batch_id')
-
-    if not tasks or idx >= len(tasks):
-        await update.message.reply_text("⚠️ Session expired.")
-        return ConversationHandler.END
-
-    if len(text) < 10:
-        await update.message.reply_text(
-            "❌ <b>Cookie too short</b>\n\nPaste the full cookie string.\n\n📋 <i>Try again:</i>",
-            parse_mode="HTML"
-        )
-        return BULK_COOKIE_INPUT
-
-    # Save cookie for current task
-    t = tasks[idx]
+    # Confirm entire batch
     with get_db() as conn:
         c = conn.cursor()
-        c.execute("UPDATE gmail SET cookie=%s WHERE task_id=%s", (text, t['task_id']))
+        c.execute("""
+            UPDATE gmail
+            SET task_status = 'confirmed', task_confirmed_at = %s
+            WHERE batch_id = %s AND task_status = 'assigned'
+            RETURNING id
+        """, (datetime.now().isoformat(), batch_id))
+        confirmed = c.fetchall()
+        count = len(confirmed)
 
-    total = len(tasks)
-    is_last = (idx == total - 1)
-
-    if is_last:
-        # All cookies collected — confirm batch
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("""
-                UPDATE gmail
-                SET task_status = 'confirmed', task_confirmed_at = %s
-                WHERE batch_id = %s AND task_status = 'assigned'
-                RETURNING id
-            """, (datetime.now().isoformat(), batch_id))
-            confirmed = c.fetchall()
-            count = len(confirmed)
-
-        if count > 0:
-            await update.message.reply_text(
-                f"✅ <b>Bulk Submission Complete!</b>\n\n"
-                f"Batch <b>{batch_id}</b> — <b>{count}</b> accounts submitted with 2FA + Cookie ✔️\n\n"
-                f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
-                f"You'll be notified for each approval/rejection.\n\n"
-                f"💡 <i>Keep going — get more tasks!</i>",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📦 More Bulk Tasks", callback_data="bulk_task")],
-                    [InlineKeyboardButton("📋 Single Task", callback_data="get_task")],
-                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                ]),
-                parse_mode="HTML"
-            )
-        else:
-            await update.message.reply_text("⚠️ Tasks already processed or expired.")
-
-        # Cleanup
-        for key in ['bulk_2fa_batch_id', 'bulk_2fa_tasks', 'bulk_2fa_index',
-                     'bulk_2fa_current_secret', 'bulk_cookie_index']:
-            context.user_data.pop(key, None)
-        return ConversationHandler.END
-    else:
-        # Move to next account's cookie
-        context.user_data['bulk_cookie_index'] = idx + 1
-        next_t = tasks[idx + 1]
-        await update.message.reply_text(
-            f"✅ Cookie saved!\n\n"
-            f"🍪 <b>Cookie Collection — Account {idx + 2}/{total}</b>\n\n"
-            f"📧 <code>{next_t['email']}</code>\n\n"
-            f"Paste the cookie for this account:",
-            parse_mode="HTML"
+    if count > 0:
+        await safe_edit_or_reply(
+            q,
+            f"✅ <b>Bulk Submission Complete!</b>\n\n"
+            f"Batch <b>{batch_id}</b> — <b>{count}</b> accounts submitted with 2FA ✔️\n\n"
+            f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
+            f"You'll be notified for each approval/rejection.\n\n"
+            f"💡 <i>Keep going — get more tasks!</i>",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📦 More Bulk Tasks", callback_data="bulk_task")],
+                [InlineKeyboardButton("📋 Single Task", callback_data="get_task")],
+                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+            ])
         )
-        return BULK_COOKIE_INPUT
+    else:
+        await q.answer("⚠️ Tasks already processed or expired", show_alert=True)
+
+    # Cleanup
+    for key in ['bulk_2fa_batch_id', 'bulk_2fa_tasks', 'bulk_2fa_index',
+                 'bulk_2fa_current_secret']:
+        context.user_data.pop(key, None)
+    return ConversationHandler.END
 
 
 async def handle_bulk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):

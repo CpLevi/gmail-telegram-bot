@@ -38,6 +38,213 @@ def get_main_reply_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
+def get_task_reply_keyboard():
+    """Dynamic reply keyboard when user is in task selection."""
+    keyboard = [
+        [KeyboardButton("📋 Get Single Task")],
+        [KeyboardButton("📦 Bulk Tasks")],
+        [KeyboardButton("❌ Cancel")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+# ==================== STANDALONE CONTENT BUILDERS ====================
+# These return (text, InlineKeyboardMarkup) and can be called from
+# both callback queries and text message handlers.
+
+def build_balance_content(user_id):
+    """Build balance info content."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT balance, total_gmail, approved_gmail FROM users WHERE user_id=%s", (user_id,))
+        result = c.fetchone()
+
+        c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='pending'", (user_id,))
+        pending = float(list(c.fetchone().values())[0])
+
+        c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='in_review'", (user_id,))
+        in_review = float(list(c.fetchone().values())[0])
+
+    bal = float(result['balance']) if result else 0
+    approved = result['approved_gmail'] if result else 0
+    total = result['total_gmail'] if result else 0
+    rate = float(calc_rate(user_id))
+    total_pending = pending + in_review
+
+    text = (
+        f"💰 <b>Balance: ₹{bal:.2f}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <b>Rate:</b> ₹{rate:.0f}/account\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔄 <b>Under Verification</b>\n"
+        f"├ ⏳ Pending review: ₹{pending:.2f}\n"
+        f"├ 🔍 In review: ₹{in_review:.2f}\n"
+        f"└ 💰 Total: ₹{total_pending:.2f}\n\n"
+        f"ℹ️ <i>\"In review\" = admin forwarded your Gmail to verification team.</i>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Statistics</b>\n"
+        f"├ ✅ Approved (all time): {approved}\n"
+        f"└ 📧 Total submitted: {total}\n"
+    )
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]])
+    return text, kb
+
+
+def build_profile_content(user_id):
+    """Build profile info content."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT balance, approved_gmail, usdt_address, upi_id, joined_date FROM users WHERE user_id=%s",
+                  (user_id,))
+        result = c.fetchone()
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (user_id,))
+        ref_count = list(c.fetchone().values())[0]
+
+    if not result:
+        return "❌ Profile not found.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]])
+
+    bal = float(result['balance'])
+    approved = result['approved_gmail']
+    usdt = result['usdt_address']
+    upi = result['upi_id']
+    joined = result['joined_date']
+    rate = float(calc_rate(user_id))
+    joined_display = joined[:10] if joined else "N/A"
+
+    text = (
+        f"👤 <b>Profile</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Balance:</b> ₹{bal:.2f}\n"
+        f"⚡ <b>Rate:</b> ₹{rate:.0f}/account\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Activity</b>\n"
+        f"├ ✅ Approved (all time): <b>{approved}</b>\n"
+        f"└ 👥 Referrals: <b>{ref_count}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 <b>Payment Methods</b>\n"
+        f"├ 📱 UPI: {'✅ Set' if upi else '❌ Not set'}\n"
+        f"└ 💎 USDT: {'✅ Set' if usdt else '❌ Not set'}\n\n"
+        f"📅 <b>Joined:</b> {joined_display}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 Payment Methods", callback_data="setup_payment")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+    ])
+    return text, kb
+
+
+def build_help_content():
+    """Build help page content."""
+    rate = float(calc_rate())
+    text = (
+        f"❓ <b>Help &amp; Support — EarnX Bot</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>How It Works</b>\n"
+        f"1️⃣ Tap <b>\"Get Task\"</b> — bot gives you account details\n"
+        f"2️⃣ Create the Gmail account <b>exactly</b> as shown\n"
+        f"3️⃣ Tap <b>\"Done\"</b> — submission goes under review\n"
+        f"4️⃣ Approved = reward credited!\n"
+        f"5️⃣ Withdraw once balance hits ₹100\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 <b>Task Types</b>\n"
+        f"• <b>Single Task</b> — one account at a time\n"
+        f"• <b>Bulk Tasks</b> — up to 20 accounts\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Reward</b>\n"
+        f"• Fixed rate: <b>₹{rate:.0f}</b>/account for everyone\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🎁 <b>Bonus Earnings</b>\n"
+        f"• Channel join: <b>₹1</b>\n"
+        f"• Referral: <b>₹5</b>/friend\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💸 <b>Withdrawals</b>\n"
+        f"• Minimum: ₹100\n"
+        f"• Fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n"
+        f"• Limit: {MAX_WITHDRAWALS_PER_DAY}/day\n"
+        f"• Methods: UPI &amp; USDT (BEP20)\n\n"
+        f"📩 Need help? @{SUPPORT_USERNAME}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+    ])
+    return text, kb
+
+
+def build_referral_content(user_id, bot_username):
+    """Build referral info content."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (user_id,))
+        ref_count = list(c.fetchone().values())[0]
+        c.execute("SELECT COALESCE(SUM(reward), 0) FROM referrals WHERE referrer_id=%s AND rewarded=1", (user_id,))
+        total_earned = float(list(c.fetchone().values())[0])
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (user_id,))
+        pending_refs = list(c.fetchone().values())[0]
+
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    text = (
+        f"👥 <b>Refer &amp; Earn</b>\n\n"
+        f"Earn <b>₹5</b> for each friend you refer!\n"
+        f"Reward credited after their first verified task.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>Your Stats</b>\n"
+        f"├ 👥 Total referrals: <b>{ref_count}</b>\n"
+        f"├ ⏳ Pending rewards: <b>{pending_refs}</b>\n"
+        f"└ 💰 Total earned: <b>₹{total_earned:.2f}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 <b>Your Referral Link:</b>\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"📲 <i>Share this link with friends!</i>"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+    ])
+    return text, kb
+
+
+def build_leaderboard_content(user_id):
+    """Build referral leaderboard content."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("""SELECT u.first_name, u.username, u.user_id, COUNT(r.id) as ref_count
+                    FROM users u
+                    JOIN referrals r ON u.user_id = r.referrer_id
+                    WHERE r.rewarded = 1
+                    GROUP BY u.user_id, u.first_name, u.username
+                    ORDER BY ref_count DESC LIMIT 10""")
+        top_referrers = c.fetchall()
+
+        c.execute("""SELECT COUNT(DISTINCT referrer_id) + 1 as rank
+                    FROM referrals WHERE rewarded = 1 AND referrer_id IN (
+                        SELECT referrer_id FROM referrals WHERE rewarded = 1
+                        GROUP BY referrer_id HAVING COUNT(*) > (
+                            SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1
+                    ))""", (user_id,))
+        result = c.fetchone()
+        user_rank = list(result.values())[0] if result else "N/A"
+
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (user_id,))
+        user_refs = list(c.fetchone().values())[0]
+
+    text = "🏆 <b>Referral Leaderboard</b>\n\n"
+    if top_referrers:
+        medals = ["🥇", "🥈", "🥉"]
+        for idx, row in enumerate(top_referrers, 1):
+            medal = medals[idx - 1] if idx <= 3 else f"<b>{idx}.</b>"
+            text += f"{medal} {row['first_name']} — <b>{row['ref_count']}</b> referrals\n"
+    else:
+        text += "<i>No referrals yet. Be the first!</i>\n"
+
+    text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"📍 Your rank: <b>#{user_rank}</b>\n"
+    text += f"👥 Your referrals: <b>{user_refs}</b>"
+
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="referral")]])
+    return text, kb
+
+
 # ==================== /START COMMAND ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,12 +346,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-    # Send persistent keyboard separately (it's a ReplyKeyboard, not inline)
-    await update.message.reply_text(
-        "⬇️ Use the menu below to navigate:",
-        reply_markup=get_main_reply_keyboard(),
-        parse_mode="HTML"
-    )
+    # Silently set the persistent reply keyboard
+    msg = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard())
+    await msg.delete()
 
 
 # ==================== USER CALLBACK HANDLER ====================
@@ -210,44 +414,8 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── BALANCE ──
     elif d == "balance":
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("SELECT balance, total_gmail, approved_gmail FROM users WHERE user_id=%s",
-                      (q.from_user.id,))
-            result = c.fetchone()
-
-            c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='pending'",
-                      (q.from_user.id,))
-            pending = float(list(c.fetchone().values())[0])
-
-            c.execute("SELECT COALESCE(SUM(reward), 0) FROM gmail WHERE user_id=%s AND status='in_review'",
-                      (q.from_user.id,))
-            in_review = float(list(c.fetchone().values())[0])
-
-        bal = float(result['balance']) if result else 0
-        total = result['total_gmail'] if result else 0
-        approved = result['approved_gmail'] if result else 0
-        rate = float(calc_rate(q.from_user.id))
-        total_pending = pending + in_review
-
-        text = (
-            f"💰 <b>Balance: ₹{bal:.2f}</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ <b>Rate:</b> ₹{rate:.0f}/account\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔄 <b>Under Verification</b>\n"
-            f"├ ⏳ Pending review: ₹{pending:.2f}\n"
-            f"├ 🔍 In review: ₹{in_review:.2f}\n"
-            f"└ 💰 Total: ₹{total_pending:.2f}\n\n"
-            f"ℹ️ <i>\"In review\" = admin forwarded your Gmail to verification team.</i>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Statistics</b>\n"
-            f"├ ✅ Approved (all time): {approved}\n"
-            f"└ 📧 Total submitted: {total}\n"
-        )
-
-        kb = [[InlineKeyboardButton("🔙 Back", callback_data="menu")]]
-        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_balance_content(q.from_user.id)
+        await safe_edit_or_reply(q, text, kb)
 
     # ── EARNINGS ──
     elif d == "earnings" or d.startswith("earnings_"):
@@ -278,81 +446,13 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── REFERRAL ──
     elif d == "referral":
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (q.from_user.id,))
-            ref_count = list(c.fetchone().values())[0]
-
-            c.execute("SELECT COALESCE(SUM(reward), 0) FROM referrals WHERE referrer_id=%s AND rewarded=1",
-                      (q.from_user.id,))
-            total_earned = float(list(c.fetchone().values())[0])
-
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (q.from_user.id,))
-            pending_refs = list(c.fetchone().values())[0]
-
-        bot_user = context.bot.username
-        ref_link = f"https://t.me/{bot_user}?start={q.from_user.id}"
-
-        text = (
-            f"👥 <b>Refer &amp; Earn</b>\n\n"
-            f"Earn <b>₹5</b> for each friend you refer!\n"
-            f"Reward credited after their first verified task.\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Your Stats</b>\n"
-            f"├ 👥 Total referrals: <b>{ref_count}</b>\n"
-            f"├ ⏳ Pending rewards: <b>{pending_refs}</b>\n"
-            f"└ 💰 Total earned: <b>₹{total_earned:.2f}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🔗 <b>Your Referral Link:</b>\n"
-            f"<code>{ref_link}</code>\n\n"
-            f"📲 <i>Share this link with friends!</i>"
-        )
-
-        kb = [
-            [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu")],
-        ]
-        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_referral_content(q.from_user.id, context.bot.username)
+        await safe_edit_or_reply(q, text, kb)
 
     # ── REFERRAL LEADERBOARD ──
     elif d == "referral_leaderboard":
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("""SELECT u.first_name, u.username, u.user_id, COUNT(r.id) as ref_count
-                        FROM users u
-                        JOIN referrals r ON u.user_id = r.referrer_id
-                        WHERE r.rewarded = 1
-                        GROUP BY u.user_id, u.first_name, u.username
-                        ORDER BY ref_count DESC LIMIT 10""")
-            top_referrers = c.fetchall()
-
-            c.execute("""SELECT COUNT(DISTINCT referrer_id) + 1 as rank
-                        FROM referrals WHERE rewarded = 1 AND referrer_id IN (
-                            SELECT referrer_id FROM referrals WHERE rewarded = 1
-                            GROUP BY referrer_id HAVING COUNT(*) > (
-                                SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1
-                        ))""", (q.from_user.id,))
-            result = c.fetchone()
-            user_rank = list(result.values())[0] if result else "N/A"
-
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            user_refs = list(c.fetchone().values())[0]
-
-        text = "🏆 <b>Referral Leaderboard</b>\n\n"
-        if top_referrers:
-            medals = ["🥇", "🥈", "🥉"]
-            for idx, row in enumerate(top_referrers, 1):
-                medal = medals[idx - 1] if idx <= 3 else f"<b>{idx}.</b>"
-                text += f"{medal} {row['first_name']} — <b>{row['ref_count']}</b> referrals\n"
-        else:
-            text += "<i>No referrals yet. Be the first!</i>\n"
-
-        text += f"\n━━━━━━━━━━━━━━━━━━━━\n"
-        text += f"📍 Your rank: <b>#{user_rank}</b>\n"
-        text += f"👥 Your referrals: <b>{user_refs}</b>"
-
-        kb = [[InlineKeyboardButton("🔙 Back", callback_data="referral")]]
-        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_leaderboard_content(q.from_user.id)
+        await safe_edit_or_reply(q, text, kb)
 
     # ── HISTORY (GMAIL) ──
     elif d == "history" or d.startswith("history_gmail_"):
@@ -447,45 +547,8 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── PROFILE ──
     elif d == "profile":
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("SELECT balance, approved_gmail, usdt_address, upi_id, joined_date FROM users WHERE user_id=%s",
-                      (q.from_user.id,))
-            result = c.fetchone()
-
-            c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=1", (q.from_user.id,))
-            ref_count = list(c.fetchone().values())[0]
-
-        if result:
-            bal = float(result['balance'])
-            approved = result['approved_gmail']
-            usdt = result['usdt_address']
-            upi = result['upi_id']
-            joined = result['joined_date']
-            rate = float(calc_rate(q.from_user.id))
-            joined_display = joined[:10] if joined else "N/A"
-
-            text = (
-                f"👤 <b>Profile</b>\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 <b>Balance:</b> ₹{bal:.2f}\n"
-                f"⚡ <b>Rate:</b> ₹{rate:.0f}/account\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 <b>Activity</b>\n"
-                f"├ ✅ Approved (all time): <b>{approved}</b>\n"
-                f"└ 👥 Referrals: <b>{ref_count}</b>\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"💳 <b>Payment Methods</b>\n"
-                f"├ 📱 UPI: {'✅ Set' if upi else '❌ Not set'}\n"
-                f"└ 💎 USDT: {'✅ Set' if usdt else '❌ Not set'}\n\n"
-                f"📅 <b>Joined:</b> {joined_display}"
-            )
-
-            kb = [
-                [InlineKeyboardButton("💳 Payment Methods", callback_data="setup_payment")],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu")],
-            ]
-            await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_profile_content(q.from_user.id)
+        await safe_edit_or_reply(q, text, kb)
 
     # ── TASKS PAUSED NOTICE ──
     elif d == "tasks_paused":
@@ -554,37 +617,5 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── HELP ──
     elif d == "help":
-        text = (
-            f"❓ <b>Help &amp; Support — EarnX Bot</b>\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 <b>How It Works</b>\n"
-            f"1️⃣ Tap <b>\"Get Task\"</b> — bot gives you account details\n"
-            f"2️⃣ Create the Gmail account <b>exactly</b> as shown\n"
-            f"3️⃣ Tap <b>\"Done\"</b> — submission goes under review\n"
-            f"4️⃣ Approved = reward credited!\n"
-            f"5️⃣ Withdraw once balance hits ₹100\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📦 <b>Task Types</b>\n"
-            f"• <b>Single Task</b> — one account at a time\n"
-            f"• <b>Bulk Tasks</b> — up to 20 accounts\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>Reward</b>\n"
-            f"• Fixed rate: <b>₹{float(calc_rate()):.0f}</b>/account for everyone\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎁 <b>Bonus Earnings</b>\n"
-            f"• Channel join: <b>₹1</b>\n"
-            f"• Referral: <b>₹5</b>/friend\n\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💸 <b>Withdrawals</b>\n"
-            f"• Minimum: ₹100\n"
-            f"• Fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n"
-            f"• Limit: {MAX_WITHDRAWALS_PER_DAY}/day\n"
-            f"• Methods: UPI &amp; USDT (BEP20)\n\n"
-            f"📩 Need help? @{SUPPORT_USERNAME}"
-        )
-
-        kb = [
-            [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu")],
-        ]
-        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_help_content()
+        await safe_edit_or_reply(q, text, kb)
