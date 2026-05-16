@@ -77,7 +77,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text(
         "❌ Cancelled",
-        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        reply_markup=get_main_reply_keyboard(update.effective_user.id), parse_mode="HTML"
     )
     return ConversationHandler.END
 
@@ -139,8 +139,47 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id, "✅ Returned to main menu.",
-            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+            reply_markup=get_main_reply_keyboard(user_id), parse_mode="HTML"
         )
+        return
+
+    # ── ADMIN PANEL (keyboard button) ──
+    if text == '🔐 Admin Panel':
+        if user_id == ADMIN_ID:
+            from database import get_db
+            with get_db() as conn:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM users")
+                users = list(c.fetchone().values())[0]
+                c.execute("SELECT COUNT(*) FROM gmail WHERE task_status='pending'")
+                pg = list(c.fetchone().values())[0]
+                c.execute("SELECT COUNT(*) FROM gmail WHERE task_status='in_review'")
+                ir = list(c.fetchone().values())[0]
+                c.execute("SELECT COUNT(*) FROM withdrawals WHERE status='pending'")
+                pw = list(c.fetchone().values())[0]
+
+            admin_text = (
+                f"🔐 <b>Admin Panel</b>\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👥 Total Users: <b>{users}</b>\n"
+                f"📬 Pending Gmail: <b>{pg}</b>\n"
+                f"🔍 In Review: <b>{ir}</b>\n"
+                f"💸 Pending Withdrawals: <b>{pw}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+            kb = [
+                [InlineKeyboardButton(f"📬 Gmail Queue ({pg})", callback_data="gmail_queue")],
+                [InlineKeyboardButton(f"🔍 In Review ({ir})", callback_data="in_review_queue")],
+                [InlineKeyboardButton("💸 Withdrawals", callback_data="withdrawal_queue")],
+                [InlineKeyboardButton("👥 User Management", callback_data="user_mgmt")],
+                [InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
+                [InlineKeyboardButton("📊 Statistics", callback_data="stats")],
+                [InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")],
+            ]
+            await context.bot.send_message(
+                chat_id, admin_text,
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            )
         return
 
     # ── ACTIVE TASK: Account Created ──

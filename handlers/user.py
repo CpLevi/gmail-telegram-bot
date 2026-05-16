@@ -27,14 +27,16 @@ logger = logging.getLogger(__name__)
 
 # ==================== PERSISTENT REPLY KEYBOARD ====================
 
-def get_main_reply_keyboard():
-    """Build the persistent bottom keyboard."""
+def get_main_reply_keyboard(user_id=None):
+    """Build the persistent bottom keyboard. Shows admin button for admin user."""
     keyboard = [
         [KeyboardButton("💰 Balance"), KeyboardButton("📋 Tasks")],
         [KeyboardButton("💸 Withdraw"), KeyboardButton("👤 Profile")],
         [KeyboardButton("🏆 Top"), KeyboardButton("⚙️ Settings")],
         [KeyboardButton("👥 My Referrals"), KeyboardButton("❓ Help")],
     ]
+    if user_id and user_id == ADMIN_ID:
+        keyboard.append([KeyboardButton("🔐 Admin Panel")])
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
@@ -403,13 +405,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Send dashboard with inline bonus buttons
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
         # Silently set the main keyboard
-        temp = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard())
+        temp = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard(user.id))
         try:
             await temp.delete()
         except Exception:
             pass
     else:
-        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(user.id), parse_mode="HTML")
 
 
 # ==================== USER CALLBACK HANDLER ====================
