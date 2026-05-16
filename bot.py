@@ -548,11 +548,10 @@ async def task_expiry_worker(app: Application):
                             f"No penalty — you can get new tasks anytime."
                         )
 
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 Get New Task", callback_data="get_task")],
-                        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-                    ])
-                    await app.bot.send_message(uid, text, parse_mode="HTML", reply_markup=kb)
+                    await app.bot.send_message(
+                        uid, text, parse_mode="HTML",
+                        reply_markup=get_main_reply_keyboard()
+                    )
                 except Exception:
                     pass
 
