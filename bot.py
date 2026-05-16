@@ -72,7 +72,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle persistent keyboard buttons — delete user text, show info directly."""
+    """Handle persistent keyboard buttons — single active message pattern."""
     ensure_user_exists(update.effective_user)
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
@@ -84,8 +84,28 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
 
+    # Helper: delete previous bot message + send new one + track it
+    async def send_clean(content, reply_markup, parse_mode="HTML"):
+        """Delete old bot response, send new one, track the message ID."""
+        # Delete previous bot message
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        # Send new message
+        msg = await context.bot.send_message(
+            chat_id, content, reply_markup=reply_markup, parse_mode=parse_mode
+        )
+        # Track it
+        context.user_data['last_bot_msg'] = msg.message_id
+        return msg
+
     # ── TASKS: Switch to task reply keyboard ──
     if text == '📋 Tasks':
+        # Clear tracking since we're changing keyboard
+        context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id,
             "📋 <b>Task Options</b>\n\nSelect a task type below:",
@@ -96,14 +116,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ── Task keyboard actions ──
     if text == '📋 Get Single Task':
-        # Trigger get_task callback via inline — send a temporary message
-        msg = await context.bot.send_message(
-            chat_id, "⏳ Loading task...",
-            reply_markup=get_main_reply_keyboard()
-        )
-        # Call the handler directly
-        from handlers.submission import handle_get_task
-        # Create a fake update-like call by sending the callback
+        context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id, "📋 <b>Getting your task...</b>",
             reply_markup=InlineKeyboardMarkup([
@@ -111,13 +124,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             ]),
             parse_mode="HTML"
         )
-        try:
-            await msg.delete()
-        except Exception:
-            pass
         return
 
     if text == '📦 Bulk Tasks':
+        context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id, "📦 <b>Bulk Tasks</b>",
             reply_markup=InlineKeyboardMarkup([
@@ -125,15 +135,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             ]),
             parse_mode="HTML"
         )
-        # Restore main keyboard
-        msg = await context.bot.send_message(chat_id, "⌨️", reply_markup=get_main_reply_keyboard())
-        try:
-            await msg.delete()
-        except Exception:
-            pass
         return
 
     if text == '❌ Cancel':
+        context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id,
             "✅ Returned to main menu.",
@@ -145,55 +150,54 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     # ── BALANCE: Show directly ──
     if text == '💰 Balance':
         content, kb = build_balance_content(user_id)
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── PROFILE: Show directly ──
     if text == '👤 Profile':
         content, kb = build_profile_content(user_id)
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── HELP: Show directly ──
     if text == '❓ Help':
         content, kb = build_help_content()
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── REFERRALS: Show directly ──
     if text == '👥 My Referrals':
         content, kb = build_referral_content(user_id, context.bot.username)
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── LEADERBOARD: Show directly ──
     if text == '🏆 Top':
         content, kb = build_leaderboard_content(user_id)
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── WITHDRAW: Show withdraw button ──
     if text == '💸 Withdraw':
-        await context.bot.send_message(
-            chat_id,
+        await send_clean(
             "💸 <b>Withdraw</b>\n\nTap below to start:",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ]),
-            parse_mode="HTML"
+            ])
         )
         return
 
     # ── SETTINGS: Show directly ──
     if text == '⚙️ Settings':
         content, kb = build_settings_content(user_id)
-        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
+        await send_clean(content, kb)
         return
 
     # ── Fallback ──
     lower = text.lower()
     if lower in ['start', 'menu', 'hi', 'hello', 'hey']:
+        context.user_data.pop('last_bot_msg', None)
         await start(update, context)
     # Silently ignore unrecognized text (no messy replies)
 
