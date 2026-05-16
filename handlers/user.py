@@ -86,7 +86,7 @@ def build_balance_content(user_id):
         f"├ ✅ Approved (all time): {approved}\n"
         f"└ 📧 Total submitted: {total}\n"
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]])
+    kb = None  # No inline buttons needed — keyboard handles navigation
     return text, kb
 
 
@@ -101,7 +101,7 @@ def build_profile_content(user_id):
         ref_count = list(c.fetchone().values())[0]
 
     if not result:
-        return "❌ Profile not found.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="menu")]])
+        return "❌ Profile not found.", None
 
     bal = float(result['balance'])
     approved = result['approved_gmail']
@@ -128,7 +128,6 @@ def build_profile_content(user_id):
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("💳 Payment Methods", callback_data="setup_payment")],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
     ])
     return text, kb
 
@@ -166,7 +165,6 @@ def build_help_content():
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
     ])
     return text, kb
 
@@ -199,7 +197,6 @@ def build_referral_content(user_id, bot_username):
     )
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
     ])
     return text, kb
 
@@ -241,7 +238,7 @@ def build_leaderboard_content(user_id):
     text += f"📍 Your rank: <b>#{user_rank}</b>\n"
     text += f"👥 Your referrals: <b>{user_refs}</b>"
 
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="referral")]])
+    kb = None  # Navigate via keyboard
     return text, kb
 
 
@@ -263,7 +260,6 @@ def build_settings_content(user_id):
                               callback_data="toggle_notif")],
         [InlineKeyboardButton("📜 Terms & Conditions", callback_data="view_terms")],
         [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
     ])
     return text, kb
 
