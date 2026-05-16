@@ -380,12 +380,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📢 Join Channel", url=channel_url)],
             [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")],
         ]
-        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
-        await update.message.reply_text(
-            "🎁 <b>Claim your bonus:</b>",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode="HTML"
-        )
+        # Send dashboard with inline bonus buttons
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        # Silently set the main keyboard
+        temp = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard())
+        try:
+            await temp.delete()
+        except Exception:
+            pass
     else:
         await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 

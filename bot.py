@@ -71,8 +71,10 @@ logger = logging.getLogger(__name__)
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel any conversation."""
     context.user_data.clear()
-    kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
-    await update.message.reply_text("❌ Cancelled", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    await update.message.reply_text(
+        "❌ Cancelled",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
     return ConversationHandler.END
 
 
