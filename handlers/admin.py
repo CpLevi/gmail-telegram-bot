@@ -161,7 +161,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # Get 10 gmails for this page
-            c.execute("""SELECT id, email, password, reward, submit_date
+            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret
                         FROM gmail WHERE user_id=%s
                         AND status = 'pending'
                         AND (task_status = 'confirmed' OR task_id IS NULL)
@@ -186,17 +186,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Pending: {total_count} | Page {page + 1}/{total_pages}\n\n"
         )
 
-        # Compact list
+        # Compact list with copy-paste format
         for i, gmail in enumerate(gmails, 1):
             gid = gmail['id']
+            secret = gmail.get('totp_secret') or 'N/A'
             text += (
                 f"{i}. <b>#{gid}</b> ⏳\n"
-                f"<code>{gmail['email']}</code>\n"
-                f"<code>{gmail['password']}</code>\n"
+                f"<code>{gmail['email']}|{gmail['password']}|{secret}</code>\n"
                 f"₹{float(gmail['reward']):.1f}\n\n"
             )
 
         kb = []
+
+        # Export button
+        kb.append([
+            InlineKeyboardButton(f"📥 Export All Pending ({total_count})", callback_data=f"export_pending_{uid}"),
+        ])
 
         # Send to Review buttons
         kb.append([
@@ -247,6 +252,77 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error send_review_all {uid}: {e}")
             await q.answer("Error", show_alert=True)
+
+    # ── EXPORT PENDING (download as .txt) ──
+    elif d.startswith("export_pending_"):
+        uid = int(d.split("_")[2])
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT email, password, totp_secret FROM gmail
+                         WHERE user_id=%s AND status='pending'
+                         AND (task_status = 'confirmed' OR task_id IS NULL)
+                         ORDER BY submit_date ASC""", (uid,))
+            rows = c.fetchall()
+            c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
+            user_info = c.fetchone()
+
+        if not rows:
+            await q.answer("No data to export", show_alert=True)
+            return
+
+        name = user_info['first_name'] if user_info else 'unknown'
+        lines = []
+        for row in rows:
+            secret = row.get('totp_secret') or 'N/A'
+            lines.append(f"{row['email']}|{row['password']}|{secret}")
+
+        content = "\n".join(lines)
+        import io
+        file = io.BytesIO(content.encode('utf-8'))
+        file.name = f"pending_{name}_{uid}_{len(rows)}.txt"
+
+        await context.bot.send_document(
+            chat_id=q.message.chat_id,
+            document=file,
+            caption=f"📥 <b>Pending Export — {name}</b>\n{len(rows)} accounts\nFormat: Email|Password|2FA_Secret",
+            parse_mode="HTML"
+        )
+        await q.answer(f"📥 {len(rows)} exported!", show_alert=True)
+
+    # ── EXPORT IN REVIEW (download as .txt) ──
+    elif d.startswith("export_inreview_"):
+        uid = int(d.split("_")[2])
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""SELECT email, password, totp_secret FROM gmail
+                         WHERE user_id=%s AND status='in_review'
+                         ORDER BY submit_date ASC""", (uid,))
+            rows = c.fetchall()
+            c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
+            user_info = c.fetchone()
+
+        if not rows:
+            await q.answer("No data to export", show_alert=True)
+            return
+
+        name = user_info['first_name'] if user_info else 'unknown'
+        lines = []
+        for row in rows:
+            secret = row.get('totp_secret') or 'N/A'
+            lines.append(f"{row['email']}|{row['password']}|{secret}")
+
+        content = "\n".join(lines)
+        import io
+        file = io.BytesIO(content.encode('utf-8'))
+        file.name = f"in_review_{name}_{uid}_{len(rows)}.txt"
+
+        await context.bot.send_document(
+            chat_id=q.message.chat_id,
+            document=file,
+            caption=f"📥 <b>In Review Export — {name}</b>\n{len(rows)} accounts\nFormat: Email|Password|2FA_Secret",
+            parse_mode="HTML"
+        )
+        await q.answer(f"📥 {len(rows)} exported!", show_alert=True)
 
     # ── IN REVIEW QUEUE (10 users per page) ──
     elif d == "in_review_queue" or d.startswith("in_review_queue_"):
@@ -321,7 +397,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await admin_callback(update, context)
                 return
 
-            c.execute("""SELECT id, email, password, reward, submit_date
+            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret
                         FROM gmail WHERE user_id=%s AND status='in_review'
                         ORDER BY submit_date ASC
                         LIMIT %s OFFSET %s""", (uid, per_page, offset))
@@ -347,16 +423,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = []
         for i, gmail in enumerate(gmails, 1):
             gid = gmail['id']
+            secret = gmail.get('totp_secret') or 'N/A'
             text += (
                 f"{i}. <b>#{gid}</b> 🔍\n"
-                f"<code>{gmail['email']}</code>\n"
-                f"<code>{gmail['password']}</code>\n"
+                f"<code>{gmail['email']}|{gmail['password']}|{secret}</code>\n"
                 f"₹{float(gmail['reward']):.1f}\n\n"
             )
             kb.append([
                 InlineKeyboardButton(f"✅ #{gid}", callback_data=f"approve_{gid}_{uid}_{page}_ir"),
                 InlineKeyboardButton(f"❌ #{gid}", callback_data=f"reject_{gid}_{uid}_{page}_ir"),
             ])
+
+        # Export button
+        kb.append([
+            InlineKeyboardButton(f"📥 Export All In Review ({total_count})", callback_data=f"export_inreview_{uid}"),
+        ])
 
         # Navigation
         nav = []
