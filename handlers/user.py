@@ -338,17 +338,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_ID:
         kb.append([InlineKeyboardButton("🔐 ADMIN PANEL", callback_data="admin")])
 
+    # Send welcome with persistent reply keyboard (always visible)
+    await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+
+    # Send inline menu as separate message
+    inline_text = "📋 <b>Quick Menu</b>\n\nTap any option below:"
+
     if not claimed:
-        text += f"\n\n⚡ Join <b>{TELEGRAM_CHANNEL}</b> to claim ₹1 bonus!"
+        inline_text += f"\n\n⚡ Join <b>{TELEGRAM_CHANNEL}</b> to claim ₹1 bonus!"
         channel_url = f"https://t.me/{TELEGRAM_CHANNEL.lstrip('@')}"
         kb.insert(0, [InlineKeyboardButton("📢 Join Channel", url=channel_url)])
         kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")])
 
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-    # Silently set the persistent reply keyboard
-    msg = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard())
-    await msg.delete()
+    await update.message.reply_text(inline_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 
 # ==================== USER CALLBACK HANDLER ====================
