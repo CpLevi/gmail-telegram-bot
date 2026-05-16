@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 # ==================== PERSISTENT REPLY KEYBOARD ====================
 
 def get_main_reply_keyboard():
-    """Build the persistent bottom keyboard (like Taskly Bot)."""
+    """Build the persistent bottom keyboard."""
     keyboard = [
         [KeyboardButton("💰 Balance"), KeyboardButton("📋 Tasks")],
         [KeyboardButton("💸 Withdraw"), KeyboardButton("👤 Profile")],
-        [KeyboardButton("🏆 Top")],
+        [KeyboardButton("🏆 Top"), KeyboardButton("⚙️ Settings")],
         [KeyboardButton("👥 My Referrals"), KeyboardButton("❓ Help")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
@@ -245,6 +245,29 @@ def build_leaderboard_content(user_id):
     return text, kb
 
 
+def build_settings_content(user_id):
+    """Build settings page content."""
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (user_id,))
+        result = c.fetchone()
+        notif = result['notifications_enabled'] if result else 1
+
+    text = (
+        f"⚙️ <b>Settings</b>\n\n"
+        f"🔔 Notifications: <b>{'✅ Enabled' if notif else '🔕 Disabled'}</b>\n\n"
+        f"📞 Support: @{SUPPORT_USERNAME}"
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔕 Disable Notifications" if notif else "🔔 Enable Notifications",
+                              callback_data="toggle_notif")],
+        [InlineKeyboardButton("📜 Terms & Conditions", callback_data="view_terms")],
+        [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu")],
+    ])
+    return text, kb
+
+
 # ==================== /START COMMAND ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -314,43 +337,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"├ ✅ Approved: <b>{approved}</b>\n"
         f"└ ⏳ Pending: <b>{pending}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"💡 <i>Tap \"Get Task\" to start earning!</i>"
+        f"💡 <i>Use the keyboard buttons below to navigate.</i>\n"
+        f"📋 <i>Tap <b>Tasks</b> to start earning!</i>"
     )
 
-    kb = []
-    if is_task_submission_enabled():
-        kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
-        if is_bulk_submission_enabled():
-            kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
-    else:
-        kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
-    kb += [
-        [InlineKeyboardButton("💰 Balance", callback_data="balance"),
-         InlineKeyboardButton("📋 History", callback_data="history")],
-        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
-         InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("👥 Refer & Earn", callback_data="referral")],
-        [InlineKeyboardButton("📊 Earnings", callback_data="earnings")],
-        [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-         InlineKeyboardButton("❓ Help", callback_data="help")],
-    ]
-
-    if user.id == ADMIN_ID:
-        kb.append([InlineKeyboardButton("🔐 ADMIN PANEL", callback_data="admin")])
-
-    # Send welcome with persistent reply keyboard (always visible)
-    await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
-
-    # Send inline menu as separate message
-    inline_text = "📋 <b>Quick Menu</b>\n\nTap any option below:"
-
+    # Only show inline buttons for channel bonus (if unclaimed)
     if not claimed:
-        inline_text += f"\n\n⚡ Join <b>{TELEGRAM_CHANNEL}</b> to claim ₹1 bonus!"
+        text += f"\n\n⚡ Join <b>{TELEGRAM_CHANNEL}</b> to claim ₹1 bonus!"
         channel_url = f"https://t.me/{TELEGRAM_CHANNEL.lstrip('@')}"
-        kb.insert(0, [InlineKeyboardButton("📢 Join Channel", url=channel_url)])
-        kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")])
-
-    await update.message.reply_text(inline_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        kb = [
+            [InlineKeyboardButton("📢 Join Channel", url=channel_url)],
+            [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")],
+        ]
+        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
+        await update.message.reply_text(
+            "🎁 <b>Claim your bonus:</b>",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="HTML"
+        )
+    else:
+        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(), parse_mode="HTML")
 
 
 # ==================== USER CALLBACK HANDLER ====================
@@ -565,26 +571,8 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── SETTINGS ──
     elif d == "settings":
-        with get_db() as conn:
-            c = conn.cursor()
-            c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (q.from_user.id,))
-            result = c.fetchone()
-            notif = result['notifications_enabled'] if result else 1
-
-        text = (
-            f"⚙️ <b>Settings</b>\n\n"
-            f"🔔 Notifications: <b>{'Enabled ✅' if notif else 'Disabled 🔕'}</b>\n\n"
-            f"📞 Support: @{SUPPORT_USERNAME}"
-        )
-
-        kb = [
-            [InlineKeyboardButton("🔕 Disable Notifications" if notif else "🔔 Enable Notifications",
-                                  callback_data="toggle_notif")],
-            [InlineKeyboardButton("📜 Terms & Conditions", callback_data="view_terms")],
-            [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="menu")],
-        ]
-        await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+        text, kb = build_settings_content(q.from_user.id)
+        await safe_edit_or_reply(q, text, kb)
 
     # ── TOGGLE NOTIFICATIONS ──
     elif d == "toggle_notif":

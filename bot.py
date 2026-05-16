@@ -30,6 +30,7 @@ from handlers.user import (
     get_main_reply_keyboard, get_task_reply_keyboard,
     build_balance_content, build_profile_content,
     build_help_content, build_referral_content, build_leaderboard_content,
+    build_settings_content,
 )
 from handlers.submission import (
     handle_get_task, handle_task_done, handle_task_skip,
@@ -182,6 +183,12 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             ]),
             parse_mode="HTML"
         )
+        return
+
+    # ── SETTINGS: Show directly ──
+    if text == '⚙️ Settings':
+        content, kb = build_settings_content(user_id)
+        await context.bot.send_message(chat_id, content, reply_markup=kb, parse_mode="HTML")
         return
 
     # ── Fallback ──
