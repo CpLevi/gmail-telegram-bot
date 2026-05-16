@@ -48,8 +48,54 @@ def get_task_reply_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
+def get_profile_keyboard():
+    """Profile sub-menu keyboard."""
+    keyboard = [
+        [KeyboardButton("💳 Payment Methods")],
+        [KeyboardButton("🔙 Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def get_payment_keyboard():
+    """Payment methods sub-menu keyboard."""
+    keyboard = [
+        [KeyboardButton("📱 Setup UPI"), KeyboardButton("💎 Setup USDT")],
+        [KeyboardButton("🔙 Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def get_settings_keyboard():
+    """Settings sub-menu keyboard."""
+    keyboard = [
+        [KeyboardButton("🔔 Toggle Notifications")],
+        [KeyboardButton("📜 Terms & Conditions")],
+        [KeyboardButton("🔙 Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def get_referral_keyboard():
+    """Referral sub-menu keyboard."""
+    keyboard = [
+        [KeyboardButton("🏆 Leaderboard")],
+        [KeyboardButton("🔙 Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
+def get_withdraw_keyboard():
+    """Withdraw sub-menu keyboard."""
+    keyboard = [
+        [KeyboardButton("📱 Withdraw UPI"), KeyboardButton("💎 Withdraw USDT")],
+        [KeyboardButton("🔙 Back")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
 # ==================== STANDALONE CONTENT BUILDERS ====================
-# These return (text, InlineKeyboardMarkup) and can be called from
+# These return (text, keyboard) and can be called from
 # both callback queries and text message handlers.
 
 def build_balance_content(user_id):
@@ -86,7 +132,7 @@ def build_balance_content(user_id):
         f"├ ✅ Approved (all time): {approved}\n"
         f"└ 📧 Total submitted: {total}\n"
     )
-    kb = None  # No inline buttons needed — keyboard handles navigation
+    kb = None
     return text, kb
 
 
@@ -126,9 +172,7 @@ def build_profile_content(user_id):
         f"└ 💎 USDT: {'✅ Set' if usdt else '❌ Not set'}\n\n"
         f"📅 <b>Joined:</b> {joined_display}"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Payment Methods", callback_data="setup_payment")],
-    ])
+    kb = None  # Payment Methods is now a keyboard button
     return text, kb
 
 
@@ -163,9 +207,7 @@ def build_help_content():
         f"• Methods: UPI &amp; USDT (BEP20)\n\n"
         f"📩 Need help? @{SUPPORT_USERNAME}"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-    ])
+    kb = None  # Support info is in message text
     return text, kb
 
 
@@ -195,9 +237,7 @@ def build_referral_content(user_id, bot_username):
         f"<code>{ref_link}</code>\n\n"
         f"📲 <i>Share this link with friends!</i>"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏆 Leaderboard", callback_data="referral_leaderboard")],
-    ])
+    kb = None  # Leaderboard is now a keyboard button
     return text, kb
 
 
@@ -255,12 +295,7 @@ def build_settings_content(user_id):
         f"🔔 Notifications: <b>{'✅ Enabled' if notif else '🔕 Disabled'}</b>\n\n"
         f"📞 Support: @{SUPPORT_USERNAME}"
     )
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔕 Disable Notifications" if notif else "🔔 Enable Notifications",
-                              callback_data="toggle_notif")],
-        [InlineKeyboardButton("📜 Terms & Conditions", callback_data="view_terms")],
-        [InlineKeyboardButton("📞 Contact Support", url=f"https://t.me/{SUPPORT_USERNAME}")],
-    ])
+    kb = None  # All settings actions are keyboard buttons now
     return text, kb
 
 

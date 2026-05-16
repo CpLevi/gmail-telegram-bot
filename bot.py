@@ -28,6 +28,8 @@ from database import get_db, init_db
 from handlers.user import (
     start, user_callback,
     get_main_reply_keyboard, get_task_reply_keyboard,
+    get_profile_keyboard, get_payment_keyboard,
+    get_settings_keyboard, get_referral_keyboard, get_withdraw_keyboard,
     build_balance_content, build_profile_content,
     build_help_content, build_referral_content, build_leaderboard_content,
     build_settings_content,
@@ -102,9 +104,8 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['last_bot_msg'] = msg.message_id
         return msg
 
-    # ── TASKS: Switch to task reply keyboard ──
+    # ── TASKS: Switch to task keyboard ──
     if text == '📋 Tasks':
-        # Clear tracking since we're changing keyboard
         context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id,
@@ -140,58 +141,223 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == '❌ Cancel':
         context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
+            chat_id, "✅ Returned to main menu.",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+        return
+
+    # ── BALANCE: Show info (no sub-menu needed) ──
+    if text == '💰 Balance':
+        content, _ = build_balance_content(user_id)
+        await send_clean(content, None)
+        return
+
+    # ── PROFILE: Show info + profile keyboard ──
+    if text == '👤 Profile':
+        content, _ = build_profile_content(user_id)
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id, content, reply_markup=get_profile_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── PROFILE SUB: Payment Methods ──
+    if text == '💳 Payment Methods':
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
             chat_id,
-            "✅ Returned to main menu.",
-            reply_markup=get_main_reply_keyboard(),
+            "💳 <b>Setup Payment Method</b>\n\nChoose your preferred method:",
+            reply_markup=get_payment_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── PAYMENT SUB: Setup UPI ──
+    if text == '📱 Setup UPI':
+        context.user_data.pop('last_bot_msg', None)
+        await context.bot.send_message(
+            chat_id,
+            "📱 <b>Setup UPI</b>\n\nTap below to start:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Setup UPI", callback_data="set_upi")],
+            ]),
             parse_mode="HTML"
         )
         return
 
-    # ── BALANCE: Show directly ──
-    if text == '💰 Balance':
-        content, kb = build_balance_content(user_id)
-        await send_clean(content, kb)
-        return
-
-    # ── PROFILE: Show directly ──
-    if text == '👤 Profile':
-        content, kb = build_profile_content(user_id)
-        await send_clean(content, kb)
-        return
-
-    # ── HELP: Show directly ──
-    if text == '❓ Help':
-        content, kb = build_help_content()
-        await send_clean(content, kb)
-        return
-
-    # ── REFERRALS: Show directly ──
-    if text == '👥 My Referrals':
-        content, kb = build_referral_content(user_id, context.bot.username)
-        await send_clean(content, kb)
-        return
-
-    # ── LEADERBOARD: Show directly ──
-    if text == '🏆 Top':
-        content, kb = build_leaderboard_content(user_id)
-        await send_clean(content, kb)
-        return
-
-    # ── WITHDRAW: Show withdraw button ──
-    if text == '💸 Withdraw':
-        await send_clean(
-            "💸 <b>Withdraw</b>\n\nTap below to start:",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
-                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
+    # ── PAYMENT SUB: Setup USDT ──
+    if text == '💎 Setup USDT':
+        context.user_data.pop('last_bot_msg', None)
+        await context.bot.send_message(
+            chat_id,
+            "💎 <b>Setup USDT</b>\n\nTap below to start:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Setup USDT", callback_data="set_usdt")],
+            ]),
+            parse_mode="HTML"
         )
         return
 
-    # ── SETTINGS: Show directly ──
+    # ── HELP: Show info ──
+    if text == '❓ Help':
+        content, _ = build_help_content()
+        await send_clean(content, None)
+        return
+
+    # ── REFERRALS: Show info + referral keyboard ──
+    if text == '👥 My Referrals':
+        content, _ = build_referral_content(user_id, context.bot.username)
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id, content, reply_markup=get_referral_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── REFERRAL SUB: Leaderboard ──
+    if text == '🏆 Leaderboard':
+        content, _ = build_leaderboard_content(user_id)
+        await send_clean(content, None)
+        return
+
+    # ── LEADERBOARD (Top button) ──
+    if text == '🏆 Top':
+        content, _ = build_leaderboard_content(user_id)
+        await send_clean(content, None)
+        return
+
+    # ── WITHDRAW: Show info + withdraw keyboard ──
+    if text == '💸 Withdraw':
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id,
+            "💸 <b>Withdraw</b>\n\nSelect your withdrawal method:",
+            reply_markup=get_withdraw_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── WITHDRAW SUB: UPI ──
+    if text == '📱 Withdraw UPI':
+        context.user_data.pop('last_bot_msg', None)
+        # Trigger withdraw via inline callback
+        await context.bot.send_message(
+            chat_id, "💸 <b>Withdraw via UPI</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📱 Withdraw UPI", callback_data="withdraw_upi")],
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    # ── WITHDRAW SUB: USDT ──
+    if text == '💎 Withdraw USDT':
+        context.user_data.pop('last_bot_msg', None)
+        await context.bot.send_message(
+            chat_id, "💸 <b>Withdraw via USDT</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💎 Withdraw USDT", callback_data="withdraw_usdt")],
+            ]),
+            parse_mode="HTML"
+        )
+        return
+
+    # ── SETTINGS: Show info + settings keyboard ──
     if text == '⚙️ Settings':
-        content, kb = build_settings_content(user_id)
-        await send_clean(content, kb)
+        content, _ = build_settings_content(user_id)
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id, content, reply_markup=get_settings_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── SETTINGS SUB: Toggle Notifications ──
+    if text == '🔔 Toggle Notifications':
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE users SET notifications_enabled = 1 - notifications_enabled WHERE user_id=%s",
+                      (user_id,))
+            c.execute("SELECT notifications_enabled FROM users WHERE user_id=%s", (user_id,))
+            new_state = list(c.fetchone().values())[0]
+        status = "✅ Enabled" if new_state else "🔕 Disabled"
+        # Re-show settings
+        content, _ = build_settings_content(user_id)
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id,
+            f"🔔 Notifications: <b>{status}</b>\n\n" + content,
+            reply_markup=get_settings_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── SETTINGS SUB: Terms & Conditions ──
+    if text == '📜 Terms & Conditions':
+        from config import WITHDRAWAL_FEE_PERCENT, WITHDRAWAL_FEE_MIN, MAX_WITHDRAWALS_PER_DAY, ALLOWED_DOMAINS, SUPPORT_USERNAME
+        terms = (
+            f"📜 <b>Terms &amp; Conditions</b>\n\n"
+            f"1. Create accounts exactly as shown in tasks\n"
+            f"2. No fake or stolen accounts\n"
+            f"3. Minimum withdrawal: ₹100\n"
+            f"4. Maximum {MAX_WITHDRAWALS_PER_DAY} withdrawals/day\n"
+            f"5. Withdrawal fee: {WITHDRAWAL_FEE_PERCENT}% (min ₹{WITHDRAWAL_FEE_MIN})\n"
+            f"6. Processing time: 24-48 hours\n"
+            f"7. Only {', '.join(ALLOWED_DOMAINS)} allowed\n"
+            f"8. Referral rewards after first verified task\n"
+            f"9. Suspicious activity = account suspension\n\n"
+            f"📞 Support: @{SUPPORT_USERNAME}"
+        )
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
+        msg = await context.bot.send_message(
+            chat_id, terms, reply_markup=get_settings_keyboard(), parse_mode="HTML"
+        )
+        context.user_data['last_bot_msg'] = msg.message_id
+        return
+
+    # ── BACK: Return to main menu ──
+    if text == '🔙 Back':
+        context.user_data.pop('last_bot_msg', None)
+        await context.bot.send_message(
+            chat_id, "✅ Main menu",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
         return
 
     # ── Fallback ──
