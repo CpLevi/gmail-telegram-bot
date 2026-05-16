@@ -1,7 +1,7 @@
 """
 EarnX Gmail Bot — Name / Email / Password Generator
 Generates realistic names from multiple countries — 90% international / 10% Indian.
-70% female, 30% male. DOB always 21–40 years old.
+70% male, 30% female. DOB always 21–40 years old.
 
 NAME SYSTEM: Curated real names from 7 countries (US, UK, France, Germany, Spain, Italy, Australia + India).
 EMAIL SYSTEM: Algorithmic generation with random letter+digit codes = MILLIONS of combos per name.
@@ -338,8 +338,8 @@ AUSTRALIAN_LAST = [
 # ==================== GENERATION FUNCTIONS ====================
 
 def _pick_gender():
-    """70% female, 30% male."""
-    return "F" if random.random() < 0.70 else "M"
+    """70% male, 30% female."""
+    return "M" if random.random() < 0.70 else "F"
 
 
 # Origin pools mapping — each origin maps to its (male_first, female_first, last) name lists
@@ -506,7 +506,7 @@ def _is_email_taken(email: str) -> bool:
 def generate_single_task(user_id: int) -> dict:
     """
     Generate a single task with name, DOB, email, and password.
-    70% female / 30% male. 10% Indian / 90% international names. DOB 21-40.
+    70% male / 30% female. 10% Indian / 90% international names. DOB 21-40.
     """
     max_retries = 15
     for _ in range(max_retries):
