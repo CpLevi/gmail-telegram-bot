@@ -324,10 +324,7 @@ async def receive_totp_secret(update: Update, context: ContextTypes.DEFAULT_TYPE
     otp = generate_totp(result)
     remaining = get_totp_remaining_seconds()
 
-    kb = [
-        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"totp_refresh_{task_id}")],
-        [InlineKeyboardButton("✅ 2FA Activated — Submit Task", callback_data=f"totp_done_{task_id}")],
-    ]
+    from handlers.user import get_2fa_keyboard
     await update.message.reply_text(
         f"🔑 <b>Your 2FA Code</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -335,16 +332,16 @@ async def receive_totp_secret(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏱ Valid for <b>{remaining}s</b>\n\n"
         f"📌 <b>Enter this code in Gmail's 2FA page.</b>\n"
-        f"🔄 Code expired? Tap <b>Refresh OTP</b> for a new one.\n"
-        f"♾ <i>You can refresh unlimited times — no worries!</i>\n\n"
-        f"✅ Once 2FA is activated, tap the button below.",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+        f"🔄 Code expired? Tap <b>Refresh OTP</b> below.\n"
+        f"♾ <i>You can refresh unlimited times!</i>\n\n"
+        f"✅ Once 2FA is activated, tap <b>Submit Task</b>.",
+        reply_markup=get_2fa_keyboard(), parse_mode="HTML"
     )
     return TOTP_SECRET
 
 
 async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh the TOTP code."""
+    """Refresh the TOTP code (callback version)."""
     q = update.callback_query
     await q.answer()
     secret = context.user_data.get('totp_secret')
@@ -357,10 +354,7 @@ async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
     otp = generate_totp(secret)
     remaining = get_totp_remaining_seconds()
 
-    kb = [
-        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"totp_refresh_{task_id}")],
-        [InlineKeyboardButton("✅ 2FA Activated — Submit Task", callback_data=f"totp_done_{task_id}")],
-    ]
+    from handlers.user import get_2fa_keyboard
     await safe_edit_or_reply(
         q,
         f"🔑 <b>Your 2FA Code (Refreshed)</b>\n\n"
@@ -368,15 +362,101 @@ async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
         f"  📟  <code>{otp}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"⏱ Valid for <b>{remaining}s</b>\n\n"
-        f"📌 Enter this code in Gmail, then tap ✅ below.\n"
-        f"🔄 <i>Need another code? Tap Refresh again!</i>",
-        InlineKeyboardMarkup(kb)
+        f"📌 Enter this code in Gmail, then tap ✅ Submit Task.",
     )
     return TOTP_SECRET
 
 
+async def handle_totp_refresh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based: user taps '🔄 Refresh OTP' keyboard button."""
+    secret = context.user_data.get('totp_secret')
+    if not secret:
+        await update.message.reply_text("⚠️ No secret stored. Send the secret key again.")
+        return TOTP_SECRET
+
+    otp = generate_totp(secret)
+    remaining = get_totp_remaining_seconds()
+
+    from handlers.user import get_2fa_keyboard
+    await update.message.reply_text(
+        f"🔑 <b>Your 2FA Code (Refreshed)</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  📟  <code>{otp}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏱ Valid for <b>{remaining}s</b>\n\n"
+        f"📌 Enter this code in Gmail, then tap <b>✅ Submit Task</b>.",
+        reply_markup=get_2fa_keyboard(), parse_mode="HTML"
+    )
+    return TOTP_SECRET
+
+
+async def handle_totp_done_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based: user taps '✅ Submit Task' keyboard button."""
+    task_id = context.user_data.get('totp_task_id')
+    secret = context.user_data.get('totp_secret')
+    chat_id = update.effective_chat.id
+
+    if not task_id:
+        from handlers.user import get_main_reply_keyboard
+        await context.bot.send_message(
+            chat_id, "⚠️ Session expired. Get a new task.",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    # Save TOTP secret to DB
+    if secret:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, task_id))
+
+    from handlers.user import get_main_reply_keyboard
+    if confirm_task(task_id):
+        await context.bot.send_message(
+            chat_id,
+            f"✅ <b>Task Submitted!</b>\n\n"
+            f"Task <code>{task_id}</code> submitted with 2FA ✔️\n\n"
+            f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
+            f"You'll be notified when approved or rejected.\n\n"
+            f"💡 <i>Tap Tasks to get another one!</i>",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+    else:
+        await context.bot.send_message(
+            chat_id, "⚠️ Task already processed or expired.",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+
+    # Cleanup
+    context.user_data.pop('totp_task_id', None)
+    context.user_data.pop('totp_secret', None)
+    context.user_data.pop('current_task_id', None)
+    context.user_data.pop('current_task_gid', None)
+    return ConversationHandler.END
+
+
+async def handle_cancel_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based: user taps '❌ Cancel Task' during any task/2FA flow."""
+    task_id = context.user_data.get('current_task_id') or context.user_data.get('totp_task_id')
+    if task_id:
+        skip_task(task_id)
+
+    context.user_data.pop('current_task_id', None)
+    context.user_data.pop('current_task_gid', None)
+    context.user_data.pop('totp_task_id', None)
+    context.user_data.pop('totp_secret', None)
+
+    from handlers.user import get_main_reply_keyboard
+    await update.message.reply_text(
+        "⏭️ <b>Task Cancelled</b>\n\n"
+        "No penalty. You can get a new task anytime.",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
+    return ConversationHandler.END
+
+
 async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User confirms 2FA is activated — save secret and submit task."""
+    """User confirms 2FA is activated — save secret and submit task (callback version)."""
     q = update.callback_query
     await q.answer()
     task_id = context.user_data.get('totp_task_id')
@@ -400,11 +480,7 @@ async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Task <code>{task_id}</code> submitted with 2FA ✔️\n\n"
             f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
             f"You'll be notified when approved or rejected.\n\n"
-            f"💡 <i>Tap \"Get Task\" for another one!</i>",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 Get Another Task", callback_data="get_task")],
-                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
+            f"💡 <i>Tap Tasks to get another one!</i>",
         )
     else:
         await q.answer("⚠️ Task already processed or expired", show_alert=True)
@@ -412,6 +488,8 @@ async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Cleanup
     context.user_data.pop('totp_task_id', None)
     context.user_data.pop('totp_secret', None)
+    context.user_data.pop('current_task_id', None)
+    context.user_data.pop('current_task_gid', None)
     return ConversationHandler.END
 
 

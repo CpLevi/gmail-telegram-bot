@@ -41,8 +41,10 @@ from handlers.submission import (
     handle_bulk_done, handle_bulk_cancel,
     handle_get_task_text, handle_bulk_task_text,
     handle_task_done_text, handle_task_skip_text,
+    handle_cancel_task_text,
     # 2FA handlers
     receive_totp_secret, handle_totp_refresh, handle_totp_done,
+    handle_totp_refresh_text, handle_totp_done_text,
     receive_bulk_totp_secret, handle_bulk_totp_refresh,
     handle_bulk_totp_next, handle_bulk_totp_alldone,
 )
@@ -779,12 +781,21 @@ def main():
         ],
         states={
             TOTP_SECRET: [
+                # Keyboard button handlers FIRST (before generic text)
+                MessageHandler(filters.Regex(r'^🔄 Refresh OTP$'), handle_totp_refresh_text),
+                MessageHandler(filters.Regex(r'^✅ Submit Task$'), handle_totp_done_text),
+                MessageHandler(filters.Regex(r'^❌ Cancel Task$'), handle_cancel_task_text),
+                # Generic text handler (for secret key input)
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_totp_secret),
+                # Callback handlers (legacy inline buttons)
                 CallbackQueryHandler(handle_totp_refresh, pattern=r"^totp_refresh_"),
                 CallbackQueryHandler(handle_totp_done, pattern=r"^totp_done_"),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            MessageHandler(filters.Regex(r'^❌ Cancel Task$'), handle_cancel_task_text),
+            CommandHandler("cancel", cancel),
+        ],
         allow_reentry=True,
     )
     app.add_handler(totp_single_conv)
