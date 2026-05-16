@@ -20,6 +20,8 @@ from config import (
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE,
     TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
     SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
+    TOTP_SECRET, TOTP_BULK_SECRET, ADMIN_SET_VIDEO,
+    COOKIE_INPUT, BULK_COOKIE_INPUT,
 )
 from database import get_db, init_db
 
@@ -29,6 +31,12 @@ from handlers.submission import (
     handle_get_task, handle_task_done, handle_task_skip,
     handle_bulk_task, handle_bulk_qty,
     handle_bulk_done, handle_bulk_cancel,
+    # 2FA handlers
+    receive_totp_secret, handle_totp_refresh, handle_totp_done,
+    receive_bulk_totp_secret, handle_bulk_totp_refresh,
+    handle_bulk_totp_next, handle_bulk_totp_alldone,
+    # Cookie handlers
+    receive_cookie, receive_bulk_cookie,
 )
 from handlers.withdrawal import (
     handle_withdraw, handle_withdraw_method, handle_setup_payment,
@@ -39,9 +47,9 @@ from handlers.admin import (
     admin_callback, start_wallet_operation,
     receive_user_search, receive_broadcast,
     receive_wallet_amount, receive_wallet_reason,
-    receive_new_price,
+    receive_new_price, receive_video_url,
 )
-from utils import ensure_user_exists
+from utils import ensure_user_exists, get_instruction_video_url
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -61,17 +69,96 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle unrecognized text messages."""
+    """Handle persistent keyboard buttons and unrecognized text."""
     ensure_user_exists(update.effective_user)
-    text = update.message.text.lower().strip()
+    text = update.message.text.strip()
 
-    if text in ['start', 'menu', 'hi', 'hello', 'hey']:
+    # Map persistent keyboard buttons to callbacks
+    keyboard_map = {
+        '💰 Balance': 'balance',
+        '📋 Tasks': 'get_task',
+        '💸 Withdraw': 'withdraw',
+        '👤 Profile': 'profile',
+        '🏆 Top': 'referral_leaderboard',
+        '👥 My Referrals': 'referral',
+        '❓ Help': 'help',
+    }
+
+    if text in keyboard_map:
+        callback_data = keyboard_map[text]
+
+        if callback_data == 'get_task':
+            await update.message.reply_text(
+                "📋 <b>Task Options</b>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Get Single Task", callback_data="get_task")],
+                    [InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")],
+                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                ]),
+                parse_mode="HTML"
+            )
+        elif callback_data == 'withdraw':
+            await update.message.reply_text(
+                "💸 <b>Withdraw</b>\n\nChoose your withdrawal method:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                ]),
+                parse_mode="HTML"
+            )
+        else:
+            # For balance, profile, help, referral, leaderboard — show a direct button
+            label_map = {
+                'balance': '💰 View Balance',
+                'profile': '👤 View Profile',
+                'referral_leaderboard': '🏆 View Leaderboard',
+                'referral': '👥 My Referrals',
+                'help': '❓ Help & Support',
+            }
+            label = label_map.get(callback_data, callback_data.title())
+            await update.message.reply_text(
+                f"Tap below to continue:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(label, callback_data=callback_data)],
+                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                ]),
+                parse_mode="HTML"
+            )
+        return
+
+    lower = text.lower()
+    if lower in ['start', 'menu', 'hi', 'hello', 'hey']:
         await start(update, context)
     else:
         kb = [[InlineKeyboardButton("📋 Main Menu", callback_data="menu")]]
         await update.message.reply_text(
             "Use the buttons below to navigate:",
             reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+        )
+
+async def handle_video_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the instruction video to the user."""
+    q = update.callback_query
+    await q.answer()
+
+    video_url = get_instruction_video_url()
+    if not video_url:
+        await q.answer("📹 No instruction video available yet.", show_alert=True)
+        return
+
+    try:
+        await context.bot.send_video(
+            chat_id=q.from_user.id,
+            video=video_url,
+            caption="📹 <b>Video Instruction</b>\n\nWatch this video to learn how to complete the task correctly.",
+            parse_mode="HTML"
+        )
+    except Exception:
+        # If video URL fails, try sending as a message with link
+        await q.message.reply_text(
+            f"📹 <b>Video Instruction</b>\n\n"
+            f"Watch the tutorial here:\n{video_url}",
+            parse_mode="HTML"
         )
 
 
@@ -255,11 +342,14 @@ def route_callback(data: str) -> str:
         "withdrawal_queue", "withdraw_approve", "withdraw_reject",
         "user_mgmt", "broadcast", "stats",
         "block_", "wallet_confirm_", "wallet_cancel",
-        "admin_settings", "set_price", "toggle_tasks",
+        "admin_settings", "set_price", "toggle_tasks", "toggle_bulk", "set_video",
     ]
     submission_prefixes = [
         "get_task", "task_done_", "task_skip_",
         "bulk_task", "bulk_qty_", "bulk_done_", "bulk_cancel_",
+        "totp_refresh_", "totp_done_",
+        "btotp_refresh_", "btotp_next_", "btotp_alldone_",
+        "video_instruction",
     ]
     withdrawal_prefixes = [
         "withdraw", "setup_payment", "set_upi", "set_usdt",
@@ -296,18 +386,17 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if route == "submission":
         if q.data == "get_task":
             return await handle_get_task(update, context)
-        elif q.data.startswith("task_done_"):
-            return await handle_task_done(update, context)
+        # task_done_ and bulk_done_ are handled by ConversationHandlers
         elif q.data.startswith("task_skip_"):
             return await handle_task_skip(update, context)
         elif q.data == "bulk_task":
             return await handle_bulk_task(update, context)
         elif q.data.startswith("bulk_qty_"):
             return await handle_bulk_qty(update, context)
-        elif q.data.startswith("bulk_done_"):
-            return await handle_bulk_done(update, context)
         elif q.data.startswith("bulk_cancel_"):
             return await handle_bulk_cancel(update, context)
+        elif q.data == "video_instruction":
+            return await handle_video_instruction(update, context)
 
     elif route == "admin":
         return await admin_callback(update, context)
@@ -410,6 +499,55 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(price_conv)
+
+    # ── Video instruction setting conversation ──
+    video_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_callback, pattern="^set_video$")],
+        states={ADMIN_SET_VIDEO: [
+            MessageHandler(filters.VIDEO & ~filters.COMMAND, receive_video_url),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, receive_video_url),
+        ]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(video_conv)
+
+    # ── Single task 2FA + Cookie conversation ──
+    totp_single_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_task_done, pattern=r"^task_done_")],
+        states={
+            TOTP_SECRET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_totp_secret),
+                CallbackQueryHandler(handle_totp_refresh, pattern=r"^totp_refresh_"),
+                CallbackQueryHandler(handle_totp_done, pattern=r"^totp_done_"),
+            ],
+            COOKIE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_cookie),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(totp_single_conv)
+
+    # ── Bulk task 2FA + Cookie conversation ──
+    totp_bulk_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_bulk_done, pattern=r"^bulk_done_")],
+        states={
+            TOTP_BULK_SECRET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_totp_secret),
+                CallbackQueryHandler(handle_bulk_totp_refresh, pattern=r"^btotp_refresh_"),
+                CallbackQueryHandler(handle_bulk_totp_next, pattern=r"^btotp_next_"),
+                CallbackQueryHandler(handle_bulk_totp_alldone, pattern=r"^btotp_alldone_"),
+            ],
+            BULK_COOKIE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_cookie),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(totp_bulk_conv)
 
     # Generic callback handler (catches everything else)
     app.add_handler(CallbackQueryHandler(main_callback), group=1)

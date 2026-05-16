@@ -4,6 +4,11 @@ Validation, calculations, cooldowns, and helper functions.
 """
 
 import re
+import hmac
+import hashlib
+import base64
+import struct
+import time
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -311,6 +316,35 @@ def set_task_submission(enabled: bool):
         return False
 
 
+def is_bulk_submission_enabled():
+    """Check if bulk task submission is currently enabled."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM system_flags WHERE key='bulk_submission_enabled'")
+            result = c.fetchone()
+            if result:
+                return result['value'] == 'true'
+    except Exception as e:
+        logger.error(f"Error checking bulk_submission_enabled: {e}")
+    return False  # default to DISABLED if flag missing
+
+
+def set_bulk_submission(enabled: bool):
+    """Enable or disable bulk task submissions. Returns True on success."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO system_flags (key, value) VALUES ('bulk_submission_enabled', %s)
+                ON CONFLICT (key) DO UPDATE SET value = %s
+            """, ('true' if enabled else 'false', 'true' if enabled else 'false'))
+        return True
+    except Exception as e:
+        logger.error(f"Error setting bulk_submission: {e}")
+        return False
+
+
 def calc_rate(user_id=None):
     """
     Fixed rate — same for all users.
@@ -318,6 +352,35 @@ def calc_rate(user_id=None):
     user_id parameter kept for backward compatibility but ignored.
     """
     return get_gmail_rate()
+
+
+def get_instruction_video_url():
+    """Get the instruction video URL from database."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM system_flags WHERE key='instruction_video_url'")
+            result = c.fetchone()
+            if result and result['value']:
+                return result['value']
+    except Exception as e:
+        logger.error(f"Error fetching instruction_video_url: {e}")
+    return ""
+
+
+def set_instruction_video_url(url: str):
+    """Set the instruction video URL. Returns True on success."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO system_flags (key, value) VALUES ('instruction_video_url', %s)
+                ON CONFLICT (key) DO UPDATE SET value = %s
+            """, (url, url))
+        return True
+    except Exception as e:
+        logger.error(f"Error setting instruction_video_url: {e}")
+        return False
 
 
 def get_earnings_stats(user_id, period='all'):
@@ -389,3 +452,66 @@ async def safe_edit_or_reply(q, text, reply_markup=None):
         except Exception:
             # Fallback to plain text if HTML parsing fails
             await q.message.reply_text(text, reply_markup=reply_markup, parse_mode=None)
+
+
+# ==================== TOTP / 2FA UTILITIES ====================
+
+def validate_totp_secret(secret: str) -> tuple[bool, str]:
+    """Validate a TOTP secret key (base32 encoded).
+    Returns (is_valid, cleaned_secret_or_error_message).
+    """
+    if not secret:
+        return False, "Secret key cannot be empty."
+
+    # Clean: remove spaces, dashes, convert to uppercase
+    cleaned = secret.strip().replace(" ", "").replace("-", "").upper()
+
+    if len(cleaned) < 16:
+        return False, "Secret key is too short. It should be at least 16 characters."
+
+    if len(cleaned) > 64:
+        return False, "Secret key is too long."
+
+    # Check valid base32 characters (A-Z, 2-7, =)
+    import re as _re
+    if not _re.match(r'^[A-Z2-7=]+$', cleaned):
+        return False, "Invalid characters in secret key. It should only contain letters A-Z and digits 2-7."
+
+    # Try to decode
+    try:
+        base64.b32decode(cleaned, casefold=True)
+    except Exception:
+        return False, "Invalid secret key format. Please copy the exact key from Gmail."
+
+    return True, cleaned
+
+
+def generate_totp(secret_base32: str, digits: int = 6, interval: int = 30) -> str:
+    """Generate a TOTP code from a base32-encoded secret (RFC 6238).
+    Uses only Python stdlib — no external dependencies needed.
+    """
+    # Decode the base32 secret
+    key = base64.b32decode(secret_base32.upper(), casefold=True)
+
+    # Current time step
+    time_step = int(time.time()) // interval
+
+    # Pack as big-endian unsigned 64-bit int
+    msg = struct.pack('>Q', time_step)
+
+    # HMAC-SHA1
+    h = hmac.new(key, msg, hashlib.sha1).digest()
+
+    # Dynamic truncation (RFC 4226 §5.4)
+    offset = h[-1] & 0x0F
+    code_int = struct.unpack('>I', h[offset:offset + 4])[0]
+    code_int = code_int & 0x7FFFFFFF
+    code_int = code_int % (10 ** digits)
+
+    return str(code_int).zfill(digits)
+
+
+def get_totp_remaining_seconds(interval: int = 30) -> int:
+    """Get remaining seconds before the current TOTP code expires."""
+    return interval - (int(time.time()) % interval)
+

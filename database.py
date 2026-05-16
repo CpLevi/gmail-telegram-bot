@@ -76,6 +76,8 @@ def init_db():
             task_assigned_at TEXT,
             task_confirmed_at TEXT,
             batch_id TEXT,
+            totp_secret TEXT,
+            cookie TEXT,
             UNIQUE(email)
         )''')
 
@@ -161,7 +163,9 @@ def init_db():
             ('auto_messages_enabled', 'true'),
             ('offers_enabled', 'true'),
             ('gmail_rate', '20'),
-            ('task_submission_enabled', 'true')
+            ('task_submission_enabled', 'true'),
+            ('bulk_submission_enabled', 'false'),
+            ('instruction_video_url', '')
             ON CONFLICT (key) DO NOTHING
         ''')
 
@@ -183,6 +187,8 @@ def init_db():
             ("gmail", "task_assigned_at", "TEXT"),
             ("gmail", "task_confirmed_at", "TEXT"),
             ("gmail", "batch_id", "TEXT"),
+            ("gmail", "totp_secret", "TEXT"),
+            ("gmail", "cookie", "TEXT"),
             ("withdrawals", "processed_date", "TEXT"),
             ("withdrawals", "rejection_reason", "TEXT"),
             ("withdrawals", "fee", "DECIMAL(10,2) DEFAULT 0"),

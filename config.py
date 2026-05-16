@@ -70,4 +70,9 @@ TASK_STATUS_CONFIRMED = "confirmed"
     BULK_TASK_QTY,
     BULK_TASK_CONFIRM,
     ADMIN_SET_PRICE,
-) = range(14)
+    TOTP_SECRET,          # 2FA secret input (single task)
+    TOTP_BULK_SECRET,     # 2FA secret input (bulk task, per-account)
+    ADMIN_SET_VIDEO,      # Admin sets instruction video URL
+    COOKIE_INPUT,         # Cookie input (single task, after 2FA)
+    BULK_COOKIE_INPUT,    # Cookie input (bulk task, per-account, after 2FA)
+) = range(19)

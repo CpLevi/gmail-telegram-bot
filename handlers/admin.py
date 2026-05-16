@@ -13,13 +13,15 @@ from telegram.ext import ContextTypes, ConversationHandler
 from config import (
     ADMIN_ID,
     ADMIN_WITHDRAWALS_PER_PAGE, USER_SEARCH, BROADCAST_MSG,
-    WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE,
+    WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_VIDEO,
 )
 from database import get_db
 from utils import (
     validate_page, round_decimal, log_audit, notify_user,
     safe_edit_or_reply, mask_email, get_gmail_rate, set_gmail_rate,
     is_task_submission_enabled, set_task_submission,
+    is_bulk_submission_enabled, set_bulk_submission,
+    get_instruction_video_url, set_instruction_video_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -949,15 +951,23 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "admin_settings":
         current_rate = float(get_gmail_rate())
         tasks_enabled = is_task_submission_enabled()
+        bulk_enabled = is_bulk_submission_enabled()
+        video_url = get_instruction_video_url()
         status_icon = "✅" if tasks_enabled else "🔴"
         status_text = "Active" if tasks_enabled else "Paused"
         toggle_label = "🔴 Disable Task Submission" if tasks_enabled else "🟢 Enable Task Submission"
+        bulk_icon = "✅" if bulk_enabled else "🔴"
+        bulk_text = "Active" if bulk_enabled else "Disabled"
+        bulk_toggle_label = "🔴 Disable Bulk Tasks" if bulk_enabled else "🟢 Enable Bulk Tasks"
+        video_status = "✅ Set" if video_url else "❌ Not set"
 
         text = (
             f"⚙️ <b>Bot Settings</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Gmail Rate:</b> ₹{current_rate:.0f}/account\n"
             f"📋 <b>Task Submission:</b> {status_icon} {status_text}\n"
+            f"📦 <b>Bulk Submission:</b> {bulk_icon} {bulk_text}\n"
+            f"🎥 <b>Video Instruction:</b> {video_status}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"Rate applies to <b>all users</b>.\n"
             f"Toggle tasks to pause/resume submissions."
@@ -965,6 +975,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [
             [InlineKeyboardButton(f"💰 Change Price (₹{current_rate:.0f})", callback_data="set_price")],
             [InlineKeyboardButton(toggle_label, callback_data="toggle_tasks")],
+            [InlineKeyboardButton(bulk_toggle_label, callback_data="toggle_bulk")],
+            [InlineKeyboardButton("🎥 Set Video Instruction", callback_data="set_video")],
             [InlineKeyboardButton("🔙 Back", callback_data="admin")],
         ]
         await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
@@ -978,18 +990,44 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state_word = "enabled" if new_state else "disabled"
             log_audit("toggle_task_submission", ADMIN_ID, None, f"Task submission {state_word}")
 
-            status_icon = "✅" if new_state else "🔴"
-            status_text = "Active" if new_state else "Paused"
-
-            await q.answer(
-                f"{'✅ Task submissions enabled' if new_state else '🔴 Task submissions disabled'}",
-                show_alert=True
-            )
+            alert_msg = "✅ Task submissions enabled" if new_state else "🔴 Task submissions disabled"
+            await q.answer(alert_msg, show_alert=True)
             # Refresh settings page
             q.data = "admin_settings"
             await admin_callback(update, context)
         else:
             await q.answer("❌ Failed to update. Try again.", show_alert=True)
+
+    # ── TOGGLE BULK SUBMISSION ──
+    elif d == "toggle_bulk":
+        current = is_bulk_submission_enabled()
+        new_state = not current
+
+        if set_bulk_submission(new_state):
+            state_word = "enabled" if new_state else "disabled"
+            log_audit("toggle_bulk_submission", ADMIN_ID, None, f"Bulk submission {state_word}")
+
+            alert_msg = "✅ Bulk submissions enabled" if new_state else "🔴 Bulk submissions disabled"
+            await q.answer(alert_msg, show_alert=True)
+            # Refresh settings page
+            q.data = "admin_settings"
+            await admin_callback(update, context)
+        else:
+            await q.answer("❌ Failed to update. Try again.", show_alert=True)
+
+    # ── SET VIDEO INSTRUCTION (entry point) ──
+    elif d == "set_video":
+        current_url = get_instruction_video_url()
+        current_display = f"Current: {current_url[:50]}..." if current_url and len(current_url) > 50 else (f"Current: {current_url}" if current_url else "No video set")
+        await safe_edit_or_reply(
+            q,
+            f"🎥 <b>Set Video Instruction</b>\n\n"
+            f"{current_display}\n\n"
+            f"Send the video URL or forward a video message.\n"
+            f"Supported: Telegram file_id, direct URL, or YouTube link.\n\n"
+            f"/cancel to abort",
+        )
+        return ADMIN_SET_VIDEO
 
     # ── SET PRICE (entry point) ──
     elif d == "set_price":
@@ -1392,3 +1430,47 @@ async def receive_new_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Error occurred.", parse_mode="HTML")
         return ConversationHandler.END
 
+
+async def receive_video_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sends a video or URL for task instruction."""
+    # Check if admin sent a video file
+    if update.message.video:
+        file_id = update.message.video.file_id
+        if set_instruction_video_url(file_id):
+            log_audit("set_instruction_video", ADMIN_ID, None, f"Video file_id: {file_id[:20]}...")
+            kb = [[InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings"),
+                   InlineKeyboardButton("🔙 Admin", callback_data="admin")]]
+            await update.message.reply_text(
+                "✅ <b>Video Instruction Updated!</b>\n\n"
+                "Users will now see this video when they tap \"📹 Video instruction\" on tasks.",
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            )
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text("⚠️ Failed to save video. Try again.", parse_mode="HTML")
+            return ADMIN_SET_VIDEO
+
+    # Check if admin sent text (URL)
+    text = update.message.text.strip() if update.message.text else ""
+
+    if not text:
+        await update.message.reply_text(
+            "❌ Please send a video file or a URL.\n\n/cancel to abort",
+            parse_mode="HTML"
+        )
+        return ADMIN_SET_VIDEO
+
+    if set_instruction_video_url(text):
+        log_audit("set_instruction_video", ADMIN_ID, None, f"URL: {text[:50]}")
+        kb = [[InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings"),
+               InlineKeyboardButton("🔙 Admin", callback_data="admin")]]
+        await update.message.reply_text(
+            f"✅ <b>Video Instruction Updated!</b>\n\n"
+            f"URL: {text[:60]}{'...' if len(text) > 60 else ''}\n\n"
+            f"Users will now see this when they tap \"📹 Video instruction\".",
+            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+        )
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("⚠️ Failed to save. Try again.\n\n/cancel to abort", parse_mode="HTML")
+        return ADMIN_SET_VIDEO

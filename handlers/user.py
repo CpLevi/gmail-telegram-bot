@@ -6,7 +6,7 @@ EarnX Gmail Bot — User Handlers
 import logging
 import psycopg2
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 
 from config import (
@@ -18,10 +18,24 @@ from utils import (
     is_blocked, notify_user, check_channel,
     calc_rate, get_earnings_stats,
     mask_email, validate_page, safe_edit_or_reply,
-    is_task_submission_enabled,
+    is_task_submission_enabled, is_bulk_submission_enabled,
+    get_instruction_video_url,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== PERSISTENT REPLY KEYBOARD ====================
+
+def get_main_reply_keyboard():
+    """Build the persistent bottom keyboard (like Taskly Bot)."""
+    keyboard = [
+        [KeyboardButton("💰 Balance"), KeyboardButton("📋 Tasks")],
+        [KeyboardButton("💸 Withdraw"), KeyboardButton("👤 Profile")],
+        [KeyboardButton("🏆 Top")],
+        [KeyboardButton("👥 My Referrals"), KeyboardButton("❓ Help")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
 # ==================== /START COMMAND ====================
@@ -99,7 +113,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = []
     if is_task_submission_enabled():
         kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
-        kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
+        if is_bulk_submission_enabled():
+            kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
     else:
         kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
     kb += [
@@ -123,6 +138,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb.insert(1, [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")])
 
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+    # Send persistent keyboard separately (it's a ReplyKeyboard, not inline)
+    await update.message.reply_text(
+        "⬇️ Use the menu below to navigate:",
+        reply_markup=get_main_reply_keyboard(),
+        parse_mode="HTML"
+    )
 
 
 # ==================== USER CALLBACK HANDLER ====================
@@ -167,7 +189,8 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = []
         if is_task_submission_enabled():
             kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
-            kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
+            if is_bulk_submission_enabled():
+                kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
         else:
             kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
         kb += [

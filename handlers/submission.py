@@ -1,6 +1,6 @@
 """
 EarnX Gmail Bot — Task-Based Submission Handlers
-Single task, bulk task, confirmation, and skip flows.
+Single task, bulk task, confirmation, skip, and 2FA flows.
 """
 
 import asyncio
@@ -12,12 +12,15 @@ from telegram.ext import ContextTypes, ConversationHandler
 from config import (
     ADMIN_ID, TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
     SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
+    TOTP_SECRET, TOTP_BULK_SECRET,
+    COOKIE_INPUT, BULK_COOKIE_INPUT,
 )
 from database import get_db
 from utils import (
     can_submit_gmail, update_submit_time, calc_rate, mask_email,
     safe_edit_or_reply, is_blocked, notify_user,
-    is_task_submission_enabled,
+    is_task_submission_enabled, is_bulk_submission_enabled,
+    validate_totp_secret, generate_totp, get_totp_remaining_seconds,
 )
 from generator import generate_single_task, generate_bulk_tasks, save_task_to_db, confirm_task, skip_task
 
@@ -97,30 +100,31 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Store task info in context for callback
     context.user_data['current_task_id'] = task['task_id']
     context.user_data['current_task_gid'] = gid
-
-    # Display task card
     text = (
-        f"📋 <b>GMAIL CREATION TASK</b>  #{gid}\n\n"
+        f"⏳ <b>Review time: {SINGLE_TASK_EXPIRY_MINUTES} min</b> ⏳\n\n"
+        f"📋 <b>Task:</b>  📧  Create Gmail (2FA)\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 <b>First Name:</b>  <code>{task['first_name']}</code>\n"
         f"👤 <b>Last Name:</b>   <code>{task['last_name']}</code>\n"
-        f"🎂 <b>DOB:</b>        <code>{task['dob']}</code>\n"
-        f"⚧️ <b>Gender:</b>     <code>{'Male' if task['gender'] == 'M' else 'Female'}</code>\n"
-        f"📧 <b>Email:</b>       <code>{task['email']}</code>\n"
-        f"🔑 <b>Password:</b>    <code>{task['password']}</code>\n"
+        f"🎂 <b>DOB:</b>          <code>{task['dob']}</code>\n"
+        f"⚧️ <b>Gender:</b>       <code>{'Male' if task['gender'] == 'M' else 'Female'}</code>\n"
+        f"📧 <b>Email:</b>        <code>{task['email']}</code>\n"
+        f"🔑 <b>Password:</b>     <code>{task['password']}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Reward:</b> ₹{float(reward):.2f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚠️ <b>Create the Gmail account EXACTLY as shown above.</b>\n"
-        f"🚫 <b>You MUST remove the account from your device after creating it, otherwise it will be considered invalid.</b>\n"
-        f"⏰ You have <b>{SINGLE_TASK_EXPIRY_MINUTES} minutes</b> to complete.\n\n"
+        f"⚠️ You <b>MUST</b> use the information above to register.\n"
+        f"❌ If you use your own information, your task will be <b>REJECTED</b>.\n\n"
+        f"After registration:\n"
+        f"👉 Click the <b>\"Account Created\"</b> button below\n"
+        f"🔐 Then set up 2FA and send the secret key\n\n"
         f"📝 <i>Tap the details to copy them!</i>"
     )
 
     kb = [
-        [InlineKeyboardButton("✅ Done — I Created It", callback_data=f"task_done_{task['task_id']}")],
-        [InlineKeyboardButton("❌ Skip This Task", callback_data=f"task_skip_{task['task_id']}")],
-        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+        [InlineKeyboardButton("✅ Account Created", callback_data=f"task_done_{task['task_id']}")],
+        [InlineKeyboardButton("🎥 Video instruction", callback_data="video_instruction")],
+        [InlineKeyboardButton("❌ Cancel", callback_data=f"task_skip_{task['task_id']}")],
     ]
 
     await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
@@ -142,31 +146,188 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to notify admin: {e}")
 
 
-# ==================== TASK DONE / SKIP CALLBACKS ====================
+# ==================== TASK DONE / 2FA FLOW ====================
 
 async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User confirms they created the account."""
+    """User confirms they created the account — start 2FA setup."""
     q = update.callback_query
     await q.answer()
-    d = q.data
+    task_id = q.data.replace("task_done_", "")
 
-    task_id = d.replace("task_done_", "")
+    # Check task is still valid
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM gmail WHERE task_id=%s AND task_status='assigned'", (task_id,))
+        if not c.fetchone():
+            await q.answer("⚠️ Task already processed or expired", show_alert=True)
+            return ConversationHandler.END
 
+    context.user_data['totp_task_id'] = task_id
+
+    await q.message.reply_text(
+        f"🔐 <b>2FA Setup Required</b>\n\n"
+        f"Task <code>{task_id}</code>\n\n"
+        f"Now set up 2-Step Verification on the Gmail account:\n\n"
+        f"1️⃣ Go to Gmail → Settings → Security\n"
+        f"2️⃣ Enable <b>2-Step Verification</b>\n"
+        f"3️⃣ Choose <b>Authenticator App</b>\n"
+        f"4️⃣ Tap <b>\"Can't scan it?\"</b> to see the secret key\n"
+        f"5️⃣ <b>Copy the secret key</b> and send it here\n\n"
+        f"⬇️ <b>Send the secret key now:</b>",
+        parse_mode="HTML"
+    )
+    return TOTP_SECRET
+
+
+async def receive_totp_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive 2FA secret, generate OTP, show to user."""
+    text = update.message.text.strip()
+    task_id = context.user_data.get('totp_task_id')
+
+    if not task_id:
+        await update.message.reply_text("⚠️ Session expired. Please tap Done on your task again.")
+        return ConversationHandler.END
+
+    valid, result = validate_totp_secret(text)
+    if not valid:
+        await update.message.reply_text(
+            f"❌ <b>Invalid Secret Key</b>\n\n{result}\n\n"
+            f"Please send the correct secret key:",
+            parse_mode="HTML"
+        )
+        return TOTP_SECRET
+
+    # Store cleaned secret
+    context.user_data['totp_secret'] = result
+
+    # Generate OTP
+    otp = generate_totp(result)
+    remaining = get_totp_remaining_seconds()
+
+    kb = [
+        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"totp_refresh_{task_id}")],
+        [InlineKeyboardButton("✅ 2FA Activated — Submit Task", callback_data=f"totp_done_{task_id}")],
+    ]
+    await update.message.reply_text(
+        f"🔑 <b>Your 2FA Code</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  📟  <code>{otp}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏱ Valid for <b>{remaining}s</b>\n\n"
+        f"📌 <b>Enter this code in Gmail's 2FA page.</b>\n"
+        f"🔄 Code expired? Tap <b>Refresh OTP</b> for a new one.\n"
+        f"♾ <i>You can refresh unlimited times — no worries!</i>\n\n"
+        f"✅ Once 2FA is activated, tap the button below.",
+        reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+    )
+    return TOTP_SECRET
+
+
+async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh the TOTP code."""
+    q = update.callback_query
+    await q.answer()
+    secret = context.user_data.get('totp_secret')
+    task_id = context.user_data.get('totp_task_id')
+
+    if not secret:
+        await q.answer("⚠️ No secret stored. Send it again.", show_alert=True)
+        return TOTP_SECRET
+
+    otp = generate_totp(secret)
+    remaining = get_totp_remaining_seconds()
+
+    kb = [
+        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"totp_refresh_{task_id}")],
+        [InlineKeyboardButton("✅ 2FA Activated — Submit Task", callback_data=f"totp_done_{task_id}")],
+    ]
+    await safe_edit_or_reply(
+        q,
+        f"🔑 <b>Your 2FA Code (Refreshed)</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  📟  <code>{otp}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏱ Valid for <b>{remaining}s</b>\n\n"
+        f"📌 Enter this code in Gmail, then tap ✅ below.\n"
+        f"🔄 <i>Need another code? Tap Refresh again!</i>",
+        InlineKeyboardMarkup(kb)
+    )
+    return TOTP_SECRET
+
+
+async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User confirms 2FA is activated — save secret and ask for cookie."""
+    q = update.callback_query
+    await q.answer()
+    task_id = context.user_data.get('totp_task_id')
+    secret = context.user_data.get('totp_secret')
+
+    if not task_id:
+        await q.answer("⚠️ Session expired", show_alert=True)
+        return ConversationHandler.END
+
+    # Save TOTP secret to DB
+    if secret:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, task_id))
+
+    # Ask for cookie — next step
+    await q.message.reply_text(
+        f"🍪 <b>Please send the account Cookie</b>\n\n"
+        f"Task <code>{task_id}</code>\n\n"
+        f"Open the browser where you created the account and "
+        f"copy the full cookie string.\n\n"
+        f"📋 <i>Paste the cookie below:</i>",
+        parse_mode="HTML"
+    )
+    return COOKIE_INPUT
+
+
+async def receive_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive browser cookie from user, save it, and submit the task."""
+    text = update.message.text.strip()
+    task_id = context.user_data.get('totp_task_id')
+
+    if not task_id:
+        await update.message.reply_text("⚠️ Session expired. Please tap Account Created on your task again.")
+        return ConversationHandler.END
+
+    if len(text) < 10:
+        await update.message.reply_text(
+            "❌ <b>Cookie too short</b>\n\n"
+            "Please paste the full cookie string from the browser.\n\n"
+            "📋 <i>Try again:</i>",
+            parse_mode="HTML"
+        )
+        return COOKIE_INPUT
+
+    # Save cookie to DB
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE gmail SET cookie=%s WHERE task_id=%s", (text, task_id))
+
+    # Confirm the task
     if confirm_task(task_id):
-        await safe_edit_or_reply(
-            q,
+        await update.message.reply_text(
             f"✅ <b>Task Submitted!</b>\n\n"
-            f"Task <code>{task_id}</code> has been submitted for review.\n\n"
+            f"Task <code>{task_id}</code> submitted with 2FA + Cookie ✔️\n\n"
             f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
-            f"You'll be notified when it's approved or rejected.\n\n"
+            f"You'll be notified when approved or rejected.\n\n"
             f"💡 <i>Tap \"Get Task\" for another one!</i>",
-            InlineKeyboardMarkup([
+            reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Get Another Task", callback_data="get_task")],
                 [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
+            ]),
+            parse_mode="HTML"
         )
     else:
-        await q.answer("⚠️ Task already processed or expired", show_alert=True)
+        await update.message.reply_text("⚠️ Task already processed or expired.")
+
+    # Cleanup
+    context.user_data.pop('totp_task_id', None)
+    context.user_data.pop('totp_secret', None)
+    return ConversationHandler.END
 
 
 async def handle_task_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -208,6 +369,21 @@ async def handle_bulk_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please check back later.\n\n"
             "💡 <i>You'll be able to get tasks once submissions resume.</i>",
             InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]),
+        )
+        return
+
+    # Check if bulk submission is enabled
+    if not is_bulk_submission_enabled():
+        await safe_edit_or_reply(
+            q,
+            "🚫 <b>Bulk Submission Disabled</b>\n\n"
+            "Bulk task submissions are currently disabled.\n"
+            "You can still use single tasks.\n\n"
+            "💡 <i>Use \"Get Task\" for single submissions.</i>",
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 Get Task", callback_data="get_task")],
+                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+            ]),
         )
         return
 
@@ -365,40 +541,270 @@ async def handle_bulk_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_bulk_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User confirms all bulk tasks are done."""
+    """User confirms all bulk tasks are done — start per-task 2FA flow."""
     q = update.callback_query
     await q.answer()
-    d = q.data
-    batch_id = d.replace("bulk_done_", "")
+    batch_id = q.data.replace("bulk_done_", "")
 
-    # Confirm all tasks in this batch
+    # Fetch all assigned tasks in this batch
     with get_db() as conn:
         c = conn.cursor()
         c.execute("""
-            UPDATE gmail
-            SET task_status = 'confirmed', task_confirmed_at = %s
+            SELECT task_id, assigned_email FROM gmail
             WHERE batch_id = %s AND task_status = 'assigned'
-            RETURNING id
-        """, (datetime.now().isoformat(), batch_id))
-        confirmed = c.fetchall()
-        count = len(confirmed)
+            ORDER BY id
+        """, (batch_id,))
+        tasks = c.fetchall()
 
-    if count > 0:
-        await safe_edit_or_reply(
-            q,
-            f"✅ <b>Bulk Submission Complete!</b>\n\n"
-            f"Batch <b>{batch_id}</b> — <b>{count}</b> accounts submitted.\n\n"
-            f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
-            f"You'll be notified for each approval/rejection.\n\n"
-            f"💡 <i>Keep going — get more tasks!</i>",
-            InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 More Bulk Tasks", callback_data="bulk_task")],
-                [InlineKeyboardButton("📋 Single Task", callback_data="get_task")],
-                [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-            ])
-        )
-    else:
+    if not tasks:
         await q.answer("⚠️ Tasks already processed or expired", show_alert=True)
+        return ConversationHandler.END
+
+    # Store bulk 2FA state
+    context.user_data['bulk_2fa_batch_id'] = batch_id
+    context.user_data['bulk_2fa_tasks'] = [
+        {'task_id': t['task_id'], 'email': t['assigned_email']} for t in tasks
+    ]
+    context.user_data['bulk_2fa_index'] = 0
+
+    # Ask for first task's secret
+    t = tasks[0]
+    await q.message.reply_text(
+        f"🔐 <b>2FA Setup — Account 1/{len(tasks)}</b>\n\n"
+        f"📧 <code>{t['assigned_email']}</code>\n\n"
+        f"Set up 2FA on this account and send the secret key here:",
+        parse_mode="HTML"
+    )
+    return TOTP_BULK_SECRET
+
+
+async def _show_bulk_task_prompt(message, context):
+    """Helper: show prompt for next bulk task's 2FA secret."""
+    tasks = context.user_data['bulk_2fa_tasks']
+    idx = context.user_data['bulk_2fa_index']
+    total = len(tasks)
+    t = tasks[idx]
+
+    await message.reply_text(
+        f"🔐 <b>2FA Setup — Account {idx + 1}/{total}</b>\n\n"
+        f"📧 <code>{t['email']}</code>\n\n"
+        f"Send the 2FA secret key for this account:",
+        parse_mode="HTML"
+    )
+
+
+async def receive_bulk_totp_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive 2FA secret for a bulk task, generate OTP."""
+    text = update.message.text.strip()
+    tasks = context.user_data.get('bulk_2fa_tasks', [])
+    idx = context.user_data.get('bulk_2fa_index', 0)
+
+    if not tasks or idx >= len(tasks):
+        await update.message.reply_text("⚠️ Session expired.")
+        return ConversationHandler.END
+
+    valid, result = validate_totp_secret(text)
+    if not valid:
+        await update.message.reply_text(
+            f"❌ <b>Invalid Secret Key</b>\n\n{result}\n\nSend the correct key:",
+            parse_mode="HTML"
+        )
+        return TOTP_BULK_SECRET
+
+    t = tasks[idx]
+    context.user_data['bulk_2fa_current_secret'] = result
+    otp = generate_totp(result)
+    remaining = get_totp_remaining_seconds()
+    total = len(tasks)
+    is_last = (idx == total - 1)
+
+    next_label = "✅ All Done — Submit Batch" if is_last else f"➡️ Next Account ({idx + 2}/{total})"
+    next_cb = f"btotp_alldone_{t['task_id']}" if is_last else f"btotp_next_{t['task_id']}"
+
+    kb = [
+        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"btotp_refresh_{t['task_id']}")],
+        [InlineKeyboardButton(next_label, callback_data=next_cb)],
+    ]
+    await update.message.reply_text(
+        f"🔑 <b>2FA Code — Account {idx + 1}/{total}</b>\n\n"
+        f"📧 <code>{t['email']}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  📟  <code>{otp}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏱ Expires in <b>{remaining}s</b>\n\n"
+        f"Enter this code in Gmail, then tap the button below.",
+        reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+    )
+    return TOTP_BULK_SECRET
+
+
+async def handle_bulk_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh OTP for current bulk task."""
+    q = update.callback_query
+    await q.answer()
+    secret = context.user_data.get('bulk_2fa_current_secret')
+    tasks = context.user_data.get('bulk_2fa_tasks', [])
+    idx = context.user_data.get('bulk_2fa_index', 0)
+
+    if not secret or not tasks:
+        await q.answer("⚠️ Send the secret key first.", show_alert=True)
+        return TOTP_BULK_SECRET
+
+    t = tasks[idx]
+    otp = generate_totp(secret)
+    remaining = get_totp_remaining_seconds()
+    total = len(tasks)
+    is_last = (idx == total - 1)
+
+    next_label = "✅ All Done — Submit Batch" if is_last else f"➡️ Next Account ({idx + 2}/{total})"
+    next_cb = f"btotp_alldone_{t['task_id']}" if is_last else f"btotp_next_{t['task_id']}"
+
+    kb = [
+        [InlineKeyboardButton("🔄 Refresh OTP", callback_data=f"btotp_refresh_{t['task_id']}")],
+        [InlineKeyboardButton(next_label, callback_data=next_cb)],
+    ]
+    await safe_edit_or_reply(
+        q,
+        f"🔑 <b>2FA Code (Refreshed) — {idx + 1}/{total}</b>\n\n"
+        f"📧 <code>{t['email']}</code>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  📟  <code>{otp}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏱ Expires in <b>{remaining}s</b>",
+        InlineKeyboardMarkup(kb)
+    )
+    return TOTP_BULK_SECRET
+
+
+async def handle_bulk_totp_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save current task's secret and move to next bulk task."""
+    q = update.callback_query
+    await q.answer()
+    tasks = context.user_data.get('bulk_2fa_tasks', [])
+    idx = context.user_data.get('bulk_2fa_index', 0)
+    secret = context.user_data.get('bulk_2fa_current_secret')
+
+    if not tasks or idx >= len(tasks):
+        return ConversationHandler.END
+
+    # Save secret for current task
+    t = tasks[idx]
+    if secret:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, t['task_id']))
+
+    # Move to next
+    context.user_data['bulk_2fa_index'] = idx + 1
+    context.user_data.pop('bulk_2fa_current_secret', None)
+    await _show_bulk_task_prompt(q.message, context)
+    return TOTP_BULK_SECRET
+
+
+async def handle_bulk_totp_alldone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """All bulk 2FA secrets collected — now collect cookies per account."""
+    q = update.callback_query
+    await q.answer()
+    tasks = context.user_data.get('bulk_2fa_tasks', [])
+    idx = context.user_data.get('bulk_2fa_index', 0)
+    secret = context.user_data.get('bulk_2fa_current_secret')
+
+    # Save last task's secret
+    if secret and tasks and idx < len(tasks):
+        t = tasks[idx]
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE gmail SET totp_secret=%s WHERE task_id=%s", (secret, t['task_id']))
+
+    # Reset index for cookie collection phase
+    context.user_data['bulk_cookie_index'] = 0
+    context.user_data.pop('bulk_2fa_current_secret', None)
+
+    # Ask for first cookie
+    t = tasks[0]
+    await q.message.reply_text(
+        f"🍪 <b>Cookie Collection — Account 1/{len(tasks)}</b>\n\n"
+        f"📧 <code>{t['email']}</code>\n\n"
+        f"Paste the cookie for this account:",
+        parse_mode="HTML"
+    )
+    return BULK_COOKIE_INPUT
+
+
+async def receive_bulk_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive cookie for a bulk task account."""
+    text = update.message.text.strip()
+    tasks = context.user_data.get('bulk_2fa_tasks', [])
+    idx = context.user_data.get('bulk_cookie_index', 0)
+    batch_id = context.user_data.get('bulk_2fa_batch_id')
+
+    if not tasks or idx >= len(tasks):
+        await update.message.reply_text("⚠️ Session expired.")
+        return ConversationHandler.END
+
+    if len(text) < 10:
+        await update.message.reply_text(
+            "❌ <b>Cookie too short</b>\n\nPaste the full cookie string.\n\n📋 <i>Try again:</i>",
+            parse_mode="HTML"
+        )
+        return BULK_COOKIE_INPUT
+
+    # Save cookie for current task
+    t = tasks[idx]
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE gmail SET cookie=%s WHERE task_id=%s", (text, t['task_id']))
+
+    total = len(tasks)
+    is_last = (idx == total - 1)
+
+    if is_last:
+        # All cookies collected — confirm batch
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE gmail
+                SET task_status = 'confirmed', task_confirmed_at = %s
+                WHERE batch_id = %s AND task_status = 'assigned'
+                RETURNING id
+            """, (datetime.now().isoformat(), batch_id))
+            confirmed = c.fetchall()
+            count = len(confirmed)
+
+        if count > 0:
+            await update.message.reply_text(
+                f"✅ <b>Bulk Submission Complete!</b>\n\n"
+                f"Batch <b>{batch_id}</b> — <b>{count}</b> accounts submitted with 2FA + Cookie ✔️\n\n"
+                f"⏳ Admin will verify within <b>24-48 hours</b>.\n"
+                f"You'll be notified for each approval/rejection.\n\n"
+                f"💡 <i>Keep going — get more tasks!</i>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 More Bulk Tasks", callback_data="bulk_task")],
+                    [InlineKeyboardButton("📋 Single Task", callback_data="get_task")],
+                    [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+                ]),
+                parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text("⚠️ Tasks already processed or expired.")
+
+        # Cleanup
+        for key in ['bulk_2fa_batch_id', 'bulk_2fa_tasks', 'bulk_2fa_index',
+                     'bulk_2fa_current_secret', 'bulk_cookie_index']:
+            context.user_data.pop(key, None)
+        return ConversationHandler.END
+    else:
+        # Move to next account's cookie
+        context.user_data['bulk_cookie_index'] = idx + 1
+        next_t = tasks[idx + 1]
+        await update.message.reply_text(
+            f"✅ Cookie saved!\n\n"
+            f"🍪 <b>Cookie Collection — Account {idx + 2}/{total}</b>\n\n"
+            f"📧 <code>{next_t['email']}</code>\n\n"
+            f"Paste the cookie for this account:",
+            parse_mode="HTML"
+        )
+        return BULK_COOKIE_INPUT
 
 
 async def handle_bulk_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
