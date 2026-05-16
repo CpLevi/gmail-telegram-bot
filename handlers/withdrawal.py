@@ -159,6 +159,128 @@ async def handle_setup_payment(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
+# ==================== TEXT-BASED ENTRY POINTS (for keyboard buttons) ====================
+
+async def handle_set_upi_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry for '📱 Setup UPI' keyboard button."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    # Delete previous bot message
+    prev_msg_id = context.user_data.get('last_bot_msg')
+    if prev_msg_id:
+        try:
+            await context.bot.delete_message(update.effective_chat.id, prev_msg_id)
+        except Exception:
+            pass
+    context.user_data.pop('last_bot_msg', None)
+
+    from handlers.user import get_main_reply_keyboard
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "📱 <b>Setup UPI</b>\n\nSend your UPI ID (e.g., <code>name@paytm</code>)\n\n/cancel to abort",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
+    return UPI_ID
+
+
+async def handle_set_usdt_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry for '💎 Setup USDT' keyboard button."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    prev_msg_id = context.user_data.get('last_bot_msg')
+    if prev_msg_id:
+        try:
+            await context.bot.delete_message(update.effective_chat.id, prev_msg_id)
+        except Exception:
+            pass
+    context.user_data.pop('last_bot_msg', None)
+
+    from handlers.user import get_main_reply_keyboard
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "💎 <b>Setup USDT</b>\n\nSend your BEP20 (BSC) address\n"
+        "<i>Must be 42 characters, starting with 0x</i>\n\n/cancel to abort",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
+    return USDT_ADDRESS
+
+
+async def handle_withdraw_upi_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry for '📱 Withdraw UPI' keyboard button."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    prev_msg_id = context.user_data.get('last_bot_msg')
+    if prev_msg_id:
+        try:
+            await context.bot.delete_message(update.effective_chat.id, prev_msg_id)
+        except Exception:
+            pass
+    context.user_data.pop('last_bot_msg', None)
+    uid = update.effective_user.id
+
+    from handlers.user import get_main_reply_keyboard
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT upi_id FROM users WHERE user_id=%s", (uid,))
+        result = c.fetchone()
+    if not result or not result['upi_id']:
+        await context.bot.send_message(
+            update.effective_chat.id,
+            "⚠️ Please setup UPI first via Profile → Payment Methods",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+        return ConversationHandler.END
+    context.user_data['withdraw_method'] = 'upi'
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "💸 <b>Withdraw via UPI</b>\n\nEnter amount (minimum ₹100):\n\n/cancel to abort",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
+    return WITHDRAW_AMT
+
+
+async def handle_withdraw_usdt_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Text-based entry for '💎 Withdraw USDT' keyboard button."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    prev_msg_id = context.user_data.get('last_bot_msg')
+    if prev_msg_id:
+        try:
+            await context.bot.delete_message(update.effective_chat.id, prev_msg_id)
+        except Exception:
+            pass
+    context.user_data.pop('last_bot_msg', None)
+    uid = update.effective_user.id
+
+    from handlers.user import get_main_reply_keyboard
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT usdt_address FROM users WHERE user_id=%s", (uid,))
+        result = c.fetchone()
+    if not result or not result['usdt_address']:
+        await context.bot.send_message(
+            update.effective_chat.id,
+            "⚠️ Please setup USDT first via Profile → Payment Methods",
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+        )
+        return ConversationHandler.END
+    context.user_data['withdraw_method'] = 'usdt'
+    await context.bot.send_message(
+        update.effective_chat.id,
+        "💸 <b>Withdraw via USDT (BEP20)</b>\n\nEnter amount (minimum ₹100):\n\n/cancel to abort",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+    )
+    return WITHDRAW_AMT
+
+
 async def handle_set_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start UPI setup."""
     q = update.callback_query

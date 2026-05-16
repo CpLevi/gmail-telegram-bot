@@ -46,8 +46,10 @@ from handlers.submission import (
 )
 from handlers.withdrawal import (
     handle_withdraw, handle_withdraw_method, handle_setup_payment,
-    handle_set_upi, handle_set_usdt,
-    receive_upi, receive_usdt, receive_withdraw_amt,
+    handle_set_upi, handle_set_usdt, receive_upi, receive_usdt,
+    receive_withdraw_amt,
+    handle_set_upi_text, handle_set_usdt_text,
+    handle_withdraw_upi_text, handle_withdraw_usdt_text,
 )
 from handlers.admin import (
     admin_callback, start_wallet_operation,
@@ -172,31 +174,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['last_bot_msg'] = msg.message_id
         return
 
-    # ── PAYMENT SUB: Setup UPI ──
-    if text == '📱 Setup UPI':
-        context.user_data.pop('last_bot_msg', None)
-        await context.bot.send_message(
-            chat_id,
-            "📱 <b>Setup UPI</b>\n\nTap below to start:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Setup UPI", callback_data="set_upi")],
-            ]),
-            parse_mode="HTML"
-        )
-        return
-
-    # ── PAYMENT SUB: Setup USDT ──
-    if text == '💎 Setup USDT':
-        context.user_data.pop('last_bot_msg', None)
-        await context.bot.send_message(
-            chat_id,
-            "💎 <b>Setup USDT</b>\n\nTap below to start:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Setup USDT", callback_data="set_usdt")],
-            ]),
-            parse_mode="HTML"
-        )
-        return
+    # ── PAYMENT SUB: Setup UPI / USDT ──
+    # Handled by ConversationHandlers (see main())
+    if text in ['📱 Setup UPI', '💎 Setup USDT']:
+        return  # ConversationHandler picks these up
 
     # ── HELP: Show info ──
     if text == '❓ Help':
@@ -247,30 +228,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data['last_bot_msg'] = msg.message_id
         return
 
-    # ── WITHDRAW SUB: UPI ──
-    if text == '📱 Withdraw UPI':
-        context.user_data.pop('last_bot_msg', None)
-        # Trigger withdraw via inline callback
-        await context.bot.send_message(
-            chat_id, "💸 <b>Withdraw via UPI</b>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📱 Withdraw UPI", callback_data="withdraw_upi")],
-            ]),
-            parse_mode="HTML"
-        )
-        return
-
-    # ── WITHDRAW SUB: USDT ──
-    if text == '💎 Withdraw USDT':
-        context.user_data.pop('last_bot_msg', None)
-        await context.bot.send_message(
-            chat_id, "💸 <b>Withdraw via USDT</b>",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💎 Withdraw USDT", callback_data="withdraw_usdt")],
-            ]),
-            parse_mode="HTML"
-        )
-        return
+    # ── WITHDRAW SUB: UPI / USDT ──
+    # Handled by ConversationHandlers (see main())
+    if text in ['📱 Withdraw UPI', '💎 Withdraw USDT']:
+        return  # ConversationHandler picks these up
 
     # ── SETTINGS: Show info + settings keyboard ──
     if text == '⚙️ Settings':
@@ -342,6 +303,12 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ── BACK: Return to main menu ──
     if text == '🔙 Back':
+        prev_msg_id = context.user_data.get('last_bot_msg')
+        if prev_msg_id:
+            try:
+                await context.bot.delete_message(chat_id, prev_msg_id)
+            except Exception:
+                pass
         context.user_data.pop('last_bot_msg', None)
         await context.bot.send_message(
             chat_id, "✅ Main menu",
@@ -647,7 +614,10 @@ def main():
 
     # ── UPI setup conversation ──
     upi_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_set_upi, pattern="^set_upi$")],
+        entry_points=[
+            CallbackQueryHandler(handle_set_upi, pattern="^set_upi$"),
+            MessageHandler(filters.Regex(r'^📱 Setup UPI$'), handle_set_upi_text),
+        ],
         states={UPI_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_upi)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
@@ -655,7 +625,10 @@ def main():
 
     # ── USDT setup conversation ──
     usdt_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_set_usdt, pattern="^set_usdt$")],
+        entry_points=[
+            CallbackQueryHandler(handle_set_usdt, pattern="^set_usdt$"),
+            MessageHandler(filters.Regex(r'^💎 Setup USDT$'), handle_set_usdt_text),
+        ],
         states={USDT_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_usdt)]},
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
@@ -665,6 +638,8 @@ def main():
     withdraw_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(handle_withdraw_method, pattern="^withdraw_(upi|usdt)$"),
+            MessageHandler(filters.Regex(r'^📱 Withdraw UPI$'), handle_withdraw_upi_text),
+            MessageHandler(filters.Regex(r'^💎 Withdraw USDT$'), handle_withdraw_usdt_text),
         ],
         states={
             WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
