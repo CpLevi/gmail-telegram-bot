@@ -427,28 +427,13 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.answer(f"Please join {TELEGRAM_CHANNEL} first", show_alert=True)
         return
 
-    # ── MAIN MENU ──
+    # ── MAIN MENU (from legacy inline Back/Menu buttons) ──
     if d == "menu":
-        kb = []
-        if is_task_submission_enabled():
-            kb.append([InlineKeyboardButton("📋 Get Task", callback_data="get_task")])
-            if is_bulk_submission_enabled():
-                kb.append([InlineKeyboardButton("📦 Bulk Tasks", callback_data="bulk_task")])
-        else:
-            kb.append([InlineKeyboardButton("🚫 Tasks Paused", callback_data="tasks_paused")])
-        kb += [
-            [InlineKeyboardButton("💰 Balance", callback_data="balance"),
-             InlineKeyboardButton("📋 History", callback_data="history")],
-            [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
-             InlineKeyboardButton("👤 Profile", callback_data="profile")],
-            [InlineKeyboardButton("👥 Refer & Earn", callback_data="referral")],
-            [InlineKeyboardButton("📊 Earnings", callback_data="earnings")],
-            [InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-             InlineKeyboardButton("❓ Help", callback_data="help")],
-        ]
-        if q.from_user.id == ADMIN_ID:
-            kb.append([InlineKeyboardButton("🔐 ADMIN PANEL", callback_data="admin")])
-        await safe_edit_or_reply(q, "📋 <b>Main Menu</b>\n\nChoose an option below:", InlineKeyboardMarkup(kb))
+        # Delete the inline message — user navigates via keyboard
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
         return ConversationHandler.END
 
     # ── BALANCE ──

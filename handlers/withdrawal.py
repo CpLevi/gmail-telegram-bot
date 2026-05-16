@@ -322,10 +322,10 @@ async def receive_upi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c = conn.cursor()
             c.execute("UPDATE users SET upi_id=%s WHERE user_id=%s", (upi_id, update.effective_user.id))
 
-        kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
+        from handlers.user import get_main_reply_keyboard
         await update.message.reply_text(
             f"✅ <b>UPI ID Saved</b>\n\nUPI: <code>{upi_id}</code>",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
         )
         return ConversationHandler.END
     except Exception as e:
@@ -351,10 +351,10 @@ async def receive_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             c = conn.cursor()
             c.execute("UPDATE users SET usdt_address=%s WHERE user_id=%s", (addr, update.effective_user.id))
 
-        kb = [[InlineKeyboardButton("🔙 Profile", callback_data="profile")]]
+        from handlers.user import get_main_reply_keyboard
         await update.message.reply_text(
             f"✅ <b>USDT Address Saved</b>\n\nAddress: <code>{addr[:10]}...{addr[-10:]}</code>",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
         )
         return ConversationHandler.END
     except Exception as e:
@@ -438,7 +438,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
 
         context.user_data.clear()
 
-        kb = [[InlineKeyboardButton("🔙 Menu", callback_data="menu")]]
+        from handlers.user import get_main_reply_keyboard
         await update.message.reply_text(
             f"✅ <b>Withdrawal Requested</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -449,7 +449,7 @@ async def receive_withdraw_amt(update: Update, context: ContextTypes.DEFAULT_TYP
             f"💳 Method: {method_name}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"⏳ Processing within <b>24-48 hours</b>",
-            reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
         )
 
         # Notify admin
