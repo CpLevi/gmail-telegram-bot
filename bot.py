@@ -559,7 +559,11 @@ def main():
     app.add_error_handler(error_handler)
 
     # ── Webhook vs Polling ──
-    webhook_url = WEBHOOK_URL or (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "")
+    # Auto-detect Render or Railway
+    render_host = os.getenv("RENDER_EXTERNAL_HOSTNAME", "")
+    webhook_url = WEBHOOK_URL or \
+        (f"https://{RAILWAY_PUBLIC_DOMAIN}" if RAILWAY_PUBLIC_DOMAIN else "") or \
+        (f"https://{render_host}" if render_host else "")
 
     if webhook_url:
         full_webhook = f"{webhook_url}/webhook/{BOT_TOKEN}"
