@@ -94,6 +94,16 @@ def get_withdraw_keyboard():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
+def get_active_task_keyboard(task_id):
+    """Keyboard shown when user has an active task."""
+    keyboard = [
+        [KeyboardButton("✅ Account Created")],
+        [KeyboardButton("🎥 Video instruction")],
+        [KeyboardButton("❌ Cancel Task")],
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
+
 # ==================== STANDALONE CONTENT BUILDERS ====================
 # These return (text, keyboard) and can be called from
 # both callback queries and text message handlers.

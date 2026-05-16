@@ -30,6 +30,7 @@ from handlers.user import (
     get_main_reply_keyboard, get_task_reply_keyboard,
     get_profile_keyboard, get_payment_keyboard,
     get_settings_keyboard, get_referral_keyboard, get_withdraw_keyboard,
+    get_active_task_keyboard,
     build_balance_content, build_profile_content,
     build_help_content, build_referral_content, build_leaderboard_content,
     build_settings_content,
@@ -39,6 +40,7 @@ from handlers.submission import (
     handle_bulk_task, handle_bulk_qty,
     handle_bulk_done, handle_bulk_cancel,
     handle_get_task_text, handle_bulk_task_text,
+    handle_task_done_text, handle_task_skip_text,
     # 2FA handlers
     receive_totp_secret, handle_totp_refresh, handle_totp_done,
     receive_bulk_totp_secret, handle_bulk_totp_refresh,
@@ -137,6 +139,54 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             chat_id, "✅ Returned to main menu.",
             reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
         )
+        return
+
+    # ── ACTIVE TASK: Account Created ──
+    if text == '✅ Account Created':
+        task_id = context.user_data.get('current_task_id')
+        if task_id:
+            from handlers.submission import handle_task_done_text
+            await handle_task_done_text(update, context, task_id)
+        else:
+            await context.bot.send_message(
+                chat_id, "⚠️ No active task found. Get a new task first.",
+                reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+            )
+        return
+
+    # ── ACTIVE TASK: Video instruction ──
+    if text == '🎥 Video instruction':
+        from utils import get_instruction_video_url
+        video_url = get_instruction_video_url()
+        if video_url:
+            try:
+                await context.bot.send_video(chat_id, video_url)
+            except Exception:
+                try:
+                    await context.bot.send_message(
+                        chat_id, f"🎥 <b>Video instruction:</b>\n{video_url}",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+        else:
+            await context.bot.send_message(
+                chat_id, "📹 No instruction video available yet.",
+                parse_mode="HTML"
+            )
+        return
+
+    # ── ACTIVE TASK: Cancel Task ──
+    if text == '❌ Cancel Task':
+        task_id = context.user_data.get('current_task_id')
+        if task_id:
+            from handlers.submission import handle_task_skip_text
+            await handle_task_skip_text(update, context, task_id)
+        else:
+            await context.bot.send_message(
+                chat_id, "✅ No active task.",
+                reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+            )
         return
 
     # ── BALANCE: Show info (no sub-menu needed) ──
@@ -710,8 +760,23 @@ def main():
     app.add_handler(video_conv)
 
     # ── Single task 2FA conversation ──
+    async def _account_created_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Entry point for '✅ Account Created' keyboard button."""
+        task_id = context.user_data.get('current_task_id')
+        if not task_id:
+            await context.bot.send_message(
+                update.effective_chat.id,
+                "⚠️ No active task found. Get a new task first.",
+                reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+            )
+            return ConversationHandler.END
+        return await handle_task_done_text(update, context, task_id)
+
     totp_single_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(handle_task_done, pattern=r"^task_done_")],
+        entry_points=[
+            CallbackQueryHandler(handle_task_done, pattern=r"^task_done_"),
+            MessageHandler(filters.Regex(r'^✅ Account Created$'), _account_created_entry),
+        ],
         states={
             TOTP_SECRET: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_totp_secret),

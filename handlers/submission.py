@@ -116,18 +116,13 @@ async def handle_get_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚠️ You <b>MUST</b> use the information above to register.\n"
         f"❌ If you use your own information, your task will be <b>REJECTED</b>.\n\n"
         f"After registration:\n"
-        f"👉 Click the <b>\"Account Created\"</b> button below\n"
+        f"👉 Tap <b>\"✅ Account Created\"</b> below\n"
         f"🔐 Then set up 2FA and send the secret key\n\n"
         f"📝 <i>Tap the details to copy them!</i>"
     )
 
-    kb = [
-        [InlineKeyboardButton("✅ Account Created", callback_data=f"task_done_{task['task_id']}")],
-        [InlineKeyboardButton("🎥 Video instruction", callback_data="video_instruction")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"task_skip_{task['task_id']}")],
-    ]
-
-    await q.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    from handlers.user import get_active_task_keyboard
+    await q.message.reply_text(text, reply_markup=get_active_task_keyboard(task['task_id']), parse_mode="HTML")
 
     # Notify admin
     try:
@@ -224,28 +219,15 @@ async def handle_get_task_text(update: Update, context: ContextTypes.DEFAULT_TYP
         f"⚠️ You <b>MUST</b> use the information above to register.\n"
         f"❌ If you use your own information, your task will be <b>REJECTED</b>.\n\n"
         f"After registration:\n"
-        f"👉 Click the <b>\"Account Created\"</b> button below\n"
+        f"👉 Tap <b>\"✅ Account Created\"</b> below\n"
         f"🔐 Then set up 2FA and send the secret key\n\n"
         f"📝 <i>Tap the details to copy them!</i>"
     )
 
-    kb = [
-        [InlineKeyboardButton("✅ Account Created", callback_data=f"task_done_{task['task_id']}")],
-        [InlineKeyboardButton("🎥 Video instruction", callback_data="video_instruction")],
-        [InlineKeyboardButton("❌ Cancel", callback_data=f"task_skip_{task['task_id']}")],
-    ]
-
-    from handlers.user import get_main_reply_keyboard
+    from handlers.user import get_active_task_keyboard
     await context.bot.send_message(
-        chat_id, text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+        chat_id, text, reply_markup=get_active_task_keyboard(task['task_id']), parse_mode="HTML"
     )
-    # Restore main keyboard
-    msg = await context.bot.send_message(chat_id, "📋 New Task Assigned",
-                                         reply_markup=get_main_reply_keyboard())
-    try:
-        await msg.delete()
-    except Exception:
-        pass
 
     # Notify admin
     try:
@@ -443,15 +425,65 @@ async def handle_task_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     skip_task(task_id)
 
+    from handlers.user import get_main_reply_keyboard
     await safe_edit_or_reply(
         q,
         "⏭️ <b>Task Skipped</b>\n\n"
         "No penalty. You can get a new task anytime.\n\n"
         "💡 <i>Tip: Complete tasks to earn rewards!</i>",
-        InlineKeyboardMarkup([
-            [InlineKeyboardButton("📋 Get New Task", callback_data="get_task")],
-            [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
-        ])
+    )
+
+
+async def handle_task_done_text(update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: str):
+    """Text-based: user taps '✅ Account Created' keyboard button."""
+    chat_id = update.effective_chat.id
+
+    # Check task is still valid
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("SELECT id FROM gmail WHERE task_id=%s AND task_status='assigned'", (task_id,))
+        if not c.fetchone():
+            from handlers.user import get_main_reply_keyboard
+            await context.bot.send_message(
+                chat_id, "⚠️ Task already processed or expired. Get a new task.",
+                reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
+            )
+            context.user_data.pop('current_task_id', None)
+            return
+
+    context.user_data['totp_task_id'] = task_id
+
+    await context.bot.send_message(
+        chat_id,
+        f"🔐 <b>2FA Setup Required</b>\n\n"
+        f"Task <code>{task_id}</code>\n\n"
+        f"Now set up 2-Step Verification on the Gmail account:\n\n"
+        f"1️⃣ Go to Gmail → Settings → Security\n"
+        f"2️⃣ Enable <b>2-Step Verification</b>\n"
+        f"3️⃣ Choose <b>Authenticator App</b>\n"
+        f"4️⃣ Tap <b>\"Can't scan it?\"</b> to see the secret key\n"
+        f"5️⃣ <b>Copy the secret key</b> and send it here\n\n"
+        f"⬇️ <b>Send the secret key now:</b>",
+        parse_mode="HTML"
+    )
+    return TOTP_SECRET
+
+
+async def handle_task_skip_text(update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: str):
+    """Text-based: user taps '❌ Cancel Task' keyboard button."""
+    chat_id = update.effective_chat.id
+
+    skip_task(task_id)
+    context.user_data.pop('current_task_id', None)
+    context.user_data.pop('current_task_gid', None)
+
+    from handlers.user import get_main_reply_keyboard
+    await context.bot.send_message(
+        chat_id,
+        "⏭️ <b>Task Skipped</b>\n\n"
+        "No penalty. You can get a new task anytime.\n\n"
+        "💡 <i>Tip: Complete tasks to earn rewards!</i>",
+        reply_markup=get_main_reply_keyboard(), parse_mode="HTML"
     )
 
 
