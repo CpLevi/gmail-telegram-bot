@@ -266,6 +266,177 @@ async def handle_bulk_task_text(update: Update, context: ContextTypes.DEFAULT_TY
     return BULK_TASK_QTY
 
 
+async def receive_bulk_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User inputted quantity as text — validate and generate tasks."""
+    uid = update.effective_user.id
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+    from utils import rate_limiter
+
+    # Rate limiting
+    if not rate_limiter.is_allowed(uid):
+        return  # silently ignore spammed commands
+
+    # Delete user's message to keep chat clean
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if is_blocked(uid):
+        await context.bot.send_message(chat_id, "⛔ Your account has been blocked.", parse_mode="HTML")
+        return ConversationHandler.END
+
+    if not text.isdigit():
+        await context.bot.send_message(
+            chat_id,
+            "⚠️ <b>Invalid Quantity</b>\n\nPlease enter a number between 2 and 20.",
+            parse_mode="HTML"
+        )
+        return BULK_TASK_QTY
+
+    qty = int(text)
+    if qty < 2 or qty > 20:
+        await context.bot.send_message(
+            chat_id,
+            "⚠️ <b>Invalid Quantity</b>\n\nPlease enter a number between 2 and 20.",
+            parse_mode="HTML"
+        )
+        return BULK_TASK_QTY
+
+    # Check if task submission is enabled
+    if not is_task_submission_enabled():
+        await context.bot.send_message(
+            chat_id,
+            "🚫 <b>Task Submission Paused</b>\n\nTask submissions are currently paused by the admin.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    # Check if bulk submission is enabled
+    if not is_bulk_submission_enabled():
+        await context.bot.send_message(
+            chat_id,
+            "🚫 <b>Bulk Submission Disabled</b>\n\nBulk task submissions are currently disabled.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    can_submit, wait_time = can_submit_gmail(uid)
+    if not can_submit:
+        await context.bot.send_message(
+            chat_id,
+            f"⏳ <b>Cooldown Active</b>\n\nPlease wait <b>{wait_time} seconds</b>.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    reward = calc_rate(uid)
+
+    # Generate batch
+    batch_id, tasks = generate_bulk_tasks(uid, qty)
+
+    if not tasks:
+        await context.bot.send_message(
+            chat_id,
+            "⚠️ <b>Generation Failed</b>\n\nCould not generate tasks. Try again.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    # Save all tasks to DB
+    saved_ids = []
+    for task in tasks:
+        gid = save_task_to_db(uid, task, reward)
+        if gid:
+            saved_ids.append((gid, task))
+
+    if not saved_ids:
+        await context.bot.send_message(
+            chat_id,
+            "⚠️ <b>Error</b>\n\nCould not save tasks. Please try again.",
+            parse_mode="HTML"
+        )
+        return ConversationHandler.END
+
+    # Update user total
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute("UPDATE users SET total_gmail=total_gmail+%s WHERE user_id=%s",
+                  (len(saved_ids), uid))
+
+    update_submit_time(uid)
+
+    # Store batch info
+    context.user_data['current_batch_id'] = batch_id
+    context.user_data['current_batch_tasks'] = [t['task_id'] for _, t in saved_ids]
+
+    # Build task list message
+    total_reward = float(reward) * len(saved_ids)
+
+    msg_text = (
+        f"📦 <b>BULK TASKS — Batch {batch_id}</b>\n"
+        f"<i>{len(saved_ids)} accounts to create</i>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
+
+    for idx, (gid, task) in enumerate(saved_ids, 1):
+        gender_label = "Male" if task['gender'] == 'M' else "Female"
+        msg_text += (
+            f"\n{idx}️⃣  <b>#{gid}</b>\n"
+            f"👤 <code>{task['first_name']} {task['last_name']}</code>\n"
+            f"🎂 {task['dob']}  |  ⚧️ {gender_label}\n"
+            f"📧 <code>{task['email']}</code>\n"
+            f"🔑 <code>{task['password']}</code>\n"
+        )
+
+    msg_text += (
+        f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Total Reward:</b> ₹{total_reward:.2f} (₹{float(reward):.0f} × {len(saved_ids)})\n"
+        f"⏰ Complete within <b>{BULK_TASK_EXPIRY_MINUTES // 60} hours</b>\n\n"
+        f"⚠️ <b>Create ALL accounts EXACTLY as shown!</b>\n"
+        f"🚫 <b>You MUST remove each account from your device after creating it, otherwise it will be considered invalid.</b>"
+    )
+
+    kb = [
+        [InlineKeyboardButton("✅ Submit All — Done", callback_data=f"bulk_done_{batch_id}")],
+        [InlineKeyboardButton("❌ Cancel All", callback_data=f"bulk_cancel_{batch_id}")],
+        [InlineKeyboardButton("🔙 Menu", callback_data="menu")],
+    ]
+
+    # Delete previous bot message if any
+    prev_msg_id = context.user_data.get('last_bot_msg')
+    if prev_msg_id:
+        try:
+            await context.bot.delete_message(chat_id, prev_msg_id)
+        except Exception:
+            pass
+
+    msg = await context.bot.send_message(chat_id, msg_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    context.user_data['last_bot_msg'] = msg.message_id
+
+    # Notify admin
+    try:
+        admin_text = (
+            f"📦 <b>Bulk Tasks Assigned</b>\n\n"
+            f"User: {update.effective_user.first_name} (@{update.effective_user.username})\n"
+            f"ID: {uid}\n"
+            f"Batch: {batch_id}\n"
+            f"Count: {len(saved_ids)} accounts\n"
+            f"Reward: ₹{float(reward)} each\n\n"
+        )
+        for idx, (gid, task) in enumerate(saved_ids[:5], 1):
+            admin_text += f"{idx}. #{gid} — {task['email']}\n"
+        if len(saved_ids) > 5:
+            admin_text += f"\n...and {len(saved_ids) - 5} more"
+
+        await context.bot.send_message(ADMIN_ID, admin_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {e}")
+
+    return ConversationHandler.END
+
+
 def restore_active_task(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> dict | None:
     """Restore active task state from database to context.user_data if memory was cleared."""
     task_id = context.user_data.get('current_task_id') or context.user_data.get('totp_task_id')

@@ -42,6 +42,7 @@ from handlers.submission import (
     handle_get_task_text, handle_bulk_task_text,
     handle_task_done_text, handle_task_skip_text,
     handle_cancel_task_text,
+    receive_bulk_qty,
     # 2FA handlers
     receive_totp_secret, handle_totp_refresh, handle_totp_done,
     handle_totp_refresh_text, handle_totp_done_text,
@@ -136,10 +137,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await handle_get_task_text(update, context)
         return
 
-    if text == '📦 Bulk Tasks':
-        context.user_data.pop('last_bot_msg', None)
-        result = await handle_bulk_task_text(update, context)
-        return result  # Returns BULK_TASK_QTY state for ConversationHandler
+
 
     if text == '❌ Cancel':
         context.user_data.pop('last_bot_msg', None)
@@ -959,6 +957,30 @@ def main():
             )
             return ConversationHandler.END
         return await handle_task_done_text(update, context, task_id)
+
+    # ── Bulk task quantity selection conversation ──
+    bulk_qty_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(handle_bulk_task, pattern="^bulk_task$"),
+            MessageHandler(filters.Regex(r'^📦 Bulk Tasks$'), handle_bulk_task_text),
+        ],
+        states={
+            BULK_TASK_QTY: [
+                # Keyboard cancel button
+                MessageHandler(filters.Regex(r'^❌ Cancel Task$'), cancel),
+                # Generic text handler (for inputting quantity)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_bulk_qty),
+                # Callback handler (legacy inline quantity buttons)
+                CallbackQueryHandler(handle_bulk_qty, pattern=r"^bulk_qty_"),
+            ]
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex(r'^❌ Cancel Task$'), cancel),
+            CommandHandler("cancel", cancel)
+        ],
+        allow_reentry=True,
+    )
+    app.add_handler(bulk_qty_conv)
 
     totp_single_conv = ConversationHandler(
         entry_points=[
