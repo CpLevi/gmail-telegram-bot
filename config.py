@@ -78,7 +78,8 @@ TASK_STATUS_CONFIRMED = "confirmed"
     BULK_COOKIE_INPUT,    # Cookie input (bulk task, per-account, after 2FA)
     WITHDRAW_CONFIRM,     # User confirming withdrawal details
     ADMIN_SET_MAX_WITHDRAW,  # Admin setting max withdrawal limit
-) = range(21)
+    WITHDRAW_REJECT_REASON,  # Admin inputting custom rejection reason
+) = range(22)
 
 # ==================== STARTUP VALIDATION ====================
 if not BOT_TOKEN:

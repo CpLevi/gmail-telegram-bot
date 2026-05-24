@@ -14,7 +14,7 @@ from config import (
     ADMIN_ID,
     ADMIN_WITHDRAWALS_PER_PAGE, USER_SEARCH, BROADCAST_MSG,
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_VIDEO,
-    ADMIN_SET_MAX_WITHDRAW,
+    ADMIN_SET_MAX_WITHDRAW, WITHDRAW_REJECT_REASON,
 )
 from database import get_db
 from utils import (
@@ -947,39 +947,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         rejection_reason = reason_map.get(reason_code, "Does not meet requirements")
 
-        try:
-            with get_db() as conn:
-                c = conn.cursor()
-                c.execute("""
-                    UPDATE withdrawals SET status='rejected', processed_date=%s, rejection_reason=%s
-                    WHERE id=%s AND status='pending'
-                    RETURNING user_id, amount
-                """, (datetime.now().isoformat(), rejection_reason, wid))
-                result = c.fetchone()
+        # Save variables to context.user_data
+        context.user_data['reject_wid'] = wid
+        context.user_data['reject_page'] = page
+        context.user_data['reject_reason_code'] = reason_code
+        context.user_data['reject_default_reason'] = rejection_reason
 
-                if not result:
-                    await q.answer("Already processed", show_alert=True)
-                    return
+        text = (
+            f"📝 <b>Add Rejection Comment</b> (Optional)\n\n"
+            f"Withdrawal: <b>#{wid}</b>\n"
+            f"Reason category: <b>{rejection_reason}</b>\n\n"
+            f"Please send a custom comment/detail to explain this rejection to the user (e.g., <i>\"Your UPI ID is inactive\"</i>), or send <code>/skip</code> to use the default reason.\n\n"
+            f"Send <code>/cancel</code> to abort the rejection."
+        )
 
-                uid, amount = result['user_id'], round_decimal(result['amount'])
-                c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
-                conn.commit()
-
-                log_audit("reject_withdrawal", ADMIN_ID, uid, f"#{wid} — ₹{float(amount):.2f} refunded")
-
-                await notify_user(context, uid,
-                    f"❌ <b>Withdrawal Rejected</b>\n\n"
-                    f"ID: #{wid}\n"
-                    f"Amount: ₹{float(amount):.2f}\n"
-                    f"Reason: {rejection_reason}\n\n"
-                    f"₹{float(amount):.2f} refunded to your balance.")
-
-                await q.answer("❌ Rejected & refunded", show_alert=True)
-                q.data = f"withdrawal_queue_{page}"
-                await admin_callback(update, context)
-        except Exception as e:
-            logger.error(f"Error: {e}")
-            await q.answer("Error", show_alert=True)
+        await safe_edit_or_reply(q, text)
+        return WITHDRAW_REJECT_REASON
 
     # ── USER MANAGEMENT ──
     elif d == "user_mgmt":
@@ -1627,4 +1610,74 @@ async def receive_max_withdraw(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Error in receive_max_withdraw: {e}")
         await update.message.reply_text("⚠️ Error occurred.", parse_mode="HTML")
+        return ConversationHandler.END
+
+
+async def receive_withdraw_reject_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin enters a custom comment/reason for rejection (or /skip to use default)."""
+    text = update.message.text.strip()
+    
+    # Retrieve details from context.user_data
+    wid = context.user_data.get('reject_wid')
+    page = context.user_data.get('reject_page')
+    reason_code = context.user_data.get('reject_reason_code')
+    default_reason = context.user_data.get('reject_default_reason')
+
+    if not all([wid, page is not None, reason_code, default_reason]):
+        await update.message.reply_text("⚠️ Rejection session expired. Please start over from the withdrawal queue.")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # If admin sent /skip, use the default reason, otherwise use the typed text
+    if text.lower() == '/skip':
+        rejection_reason = default_reason
+    else:
+        rejection_reason = f"{default_reason} - {text}"
+
+    # Clear html tags from custom reason to avoid parse mode crashes
+    import html
+    rejection_reason = html.escape(rejection_reason)
+
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                UPDATE withdrawals SET status='rejected', processed_date=%s, rejection_reason=%s
+                WHERE id=%s AND status='pending'
+                RETURNING user_id, amount
+            """, (datetime.now().isoformat(), rejection_reason, wid))
+            result = c.fetchone()
+
+            if not result:
+                await update.message.reply_text("⚠️ This withdrawal has already been processed or is not pending.")
+                context.user_data.clear()
+                return ConversationHandler.END
+
+            uid, amount = result['user_id'], round_decimal(result['amount'])
+            c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (amount, uid))
+            conn.commit()
+
+            log_audit("reject_withdrawal", ADMIN_ID, uid, f"#{wid} — ₹{float(amount):.2f} refunded — {rejection_reason}")
+
+            # Notify the user with the custom reason / comments!
+            await notify_user(context, uid,
+                f"❌ <b>Withdrawal Rejected</b>\n\n"
+                f"ID: #{wid}\n"
+                f"Amount: ₹{float(amount):.2f}\n"
+                f"<b>Reason:</b> {rejection_reason}\n\n"
+                f"₹{float(amount):.2f} refunded to your balance.")
+
+            await update.message.reply_text(
+                f"❌ <b>Withdrawal #{wid} Rejected & Refunded</b>\n\n"
+                f"User ID: {uid}\n"
+                f"Refunded: ₹{float(amount):.2f}\n"
+                f"Reason: {rejection_reason}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Withdrawals Queue", callback_data=f"withdrawal_queue_{page}")]])
+            )
+            context.user_data.clear()
+            return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error executing custom reject withdrawal: {e}")
+        await update.message.reply_text("⚠️ Error occurred during rejection.")
+        context.user_data.clear()
         return ConversationHandler.END

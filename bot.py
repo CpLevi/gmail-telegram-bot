@@ -20,7 +20,7 @@ from config import (
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_MAX_WITHDRAW,
     TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
     SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
-    TOTP_SECRET, TOTP_BULK_SECRET, ADMIN_SET_VIDEO,
+    TOTP_SECRET, TOTP_BULK_SECRET, ADMIN_SET_VIDEO, WITHDRAW_REJECT_REASON,
 )
 
 
@@ -60,7 +60,7 @@ from handlers.admin import (
     receive_user_search, receive_broadcast,
     receive_wallet_amount, receive_wallet_reason,
     receive_new_price, receive_video_url,
-    receive_max_withdraw,
+    receive_max_withdraw, receive_withdraw_reject_reason,
 )
 from database import get_db, init_db, close_pool
 from utils import ensure_user_exists, get_instruction_video_url, rate_limiter
@@ -845,6 +845,15 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(max_withdraw_conv)
+
+    # ── Withdrawal rejection comment conversation ──
+    reject_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_callback, pattern="^withdraw_reject_confirm_")],
+        states={WITHDRAW_REJECT_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_reject_reason)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(reject_conv)
 
     # ── Single task 2FA conversation ──
     async def _account_created_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
