@@ -776,6 +776,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── WITHDRAWAL QUEUE ──
     elif d == "withdrawal_queue" or d.startswith("withdrawal_queue_"):
+        per_page = ADMIN_WITHDRAWALS_PER_PAGE
         page = validate_page(d.split("_")[-1]) if "_" in d else 0
 
         with get_db() as conn:
@@ -789,41 +790,47 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin")]]))
                 return
 
+            max_page = (total_pending - 1) // per_page
             if page < 0:
                 page = 0
-            elif page >= total_pending:
-                page = total_pending - 1
+            elif page > max_page:
+                page = max_page
+
+            offset = page * per_page
 
             c.execute("""SELECT w.id, w.amount, w.fee, w.final_amount, w.method, w.payment_info, w.request_date,
                          u.first_name, u.username, u.user_id
                          FROM withdrawals w JOIN users u ON w.user_id = u.user_id
-                         WHERE w.status='pending' ORDER BY w.request_date LIMIT 1 OFFSET %s""", (page,))
-            w = c.fetchone()
+                         WHERE w.status='pending' ORDER BY w.request_date LIMIT %s OFFSET %s""", (per_page, offset))
+            withdrawals = c.fetchall()
 
-        if w:
+        if withdrawals:
+            total_pages = max(1, (total_pending + per_page - 1) // per_page)
             text = (
-                f"💸 <b>Withdrawal #{w['id']}</b>\n"
-                f"<i>Position {page + 1} of {total_pending}</i>\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 User: {w['first_name']} (@{w['username'] or 'N/A'})\n"
-                f"🆔 User ID: {w['user_id']}\n"
-                f"💰 Amount: <b>₹{float(w['amount']):.2f}</b>\n"
-                f"📊 Fee: ₹{float(w['fee']):.2f}\n"
-                f"💵 Final: <b>₹{float(w['final_amount']):.2f}</b>\n"
-                f"💳 Method: {w['method'].upper()}\n"
-                f"📋 Payment: <code>{w['payment_info']}</code>\n"
-                f"📅 Date: {w['request_date'][:16]}\n"
-                f"━━━━━━━━━━━━━━━━━━━━"
+                f"💸 <b>Pending Withdrawals</b>\n"
+                f"<i>Total Pending: {total_pending} | Page {page + 1} of {total_pages}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
             )
 
-            kb = [
-                [InlineKeyboardButton("✅ Approve", callback_data=f"withdraw_approve_{w['id']}_{page}"),
-                 InlineKeyboardButton("❌ Reject", callback_data=f"withdraw_reject_{w['id']}_{page}")],
-            ]
+            kb = []
+            for i, w in enumerate(withdrawals, 1):
+                text += (
+                    f"{i}. <b>💸 Withdrawal #{w['id']}</b>\n"
+                    f"👤 User: {w['first_name']} (@{w['username'] or 'N/A'}) [<code>{w['user_id']}</code>]\n"
+                    f"💰 Final: <b>₹{float(w['final_amount']):.2f}</b> (Amt: ₹{float(w['amount']):.2f} | Fee: ₹{float(w['fee']):.2f})\n"
+                    f"💳 {w['method'].upper()}: <code>{w['payment_info']}</code>\n"
+                    f"📅 {w['request_date'][:16]}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                )
+                kb.append([
+                    InlineKeyboardButton(f"✅ #{w['id']}", callback_data=f"withdraw_approve_{w['id']}_{page}"),
+                    InlineKeyboardButton(f"❌ #{w['id']}", callback_data=f"withdraw_reject_{w['id']}_{page}")
+                ])
+
             nav = []
             if page > 0:
                 nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"withdrawal_queue_{page - 1}"))
-            if page < total_pending - 1:
+            if offset + per_page < total_pending:
                 nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"withdrawal_queue_{page + 1}"))
             if nav:
                 kb.append(nav)
