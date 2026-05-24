@@ -633,6 +633,7 @@ async def verification_worker(app: Application):
 
     while not _shutdown:
         try:
+            cutoff = (datetime.now() - timedelta(minutes=3)).isoformat()
             with get_db() as conn:
                 c = conn.cursor()
                 # Find confirmed submissions that are unchecked and at least 3 minutes old
@@ -642,10 +643,10 @@ async def verification_worker(app: Application):
                     WHERE verification_status = 'unchecked'
                       AND task_status = 'confirmed'
                       AND task_confirmed_at IS NOT NULL
-                      AND task_confirmed_at::TIMESTAMP < (NOW() - INTERVAL '3 minutes')
+                      AND task_confirmed_at::TIMESTAMP < %s::TIMESTAMP
                     ORDER BY task_confirmed_at ASC
                     LIMIT 10
-                """)
+                """, (cutoff,))
                 pending = c.fetchall()
 
             if not pending:
