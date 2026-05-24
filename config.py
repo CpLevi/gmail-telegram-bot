@@ -40,6 +40,10 @@ MAX_PAGINATION_PAGE = 50
 SINGLE_TASK_EXPIRY_MINUTES = 30
 BULK_TASK_EXPIRY_MINUTES = 120
 
+# ==================== SMTP VERIFICATION CONFIG ====================
+DISABLE_SMTP_CHECK = os.getenv("DISABLE_SMTP_CHECK", "false").lower() == "true"
+SMTP_PROXY = os.getenv("SMTP_PROXY", "")  # e.g. "socks5://user:pass@host:port" or "socks5://host:port"
+
 # ==================== ADMIN PAGINATION ====================
 ADMIN_USERS_PER_PAGE = 10
 ADMIN_GMAIL_PER_PAGE = 10

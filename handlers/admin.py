@@ -15,6 +15,7 @@ from config import (
     ADMIN_WITHDRAWALS_PER_PAGE, USER_SEARCH, BROADCAST_MSG,
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_VIDEO,
     ADMIN_SET_MAX_WITHDRAW, WITHDRAW_REJECT_REASON,
+    DISABLE_SMTP_CHECK, SMTP_PROXY,
 )
 from database import get_db
 from utils import (
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 # Verification badge helper
 def _vbadge(status):
     """Return emoji badge for verification status."""
+    if DISABLE_SMTP_CHECK and not SMTP_PROXY:
+        return ""
     return {"verified": "✅", "suspicious": "⚠️", "error": "❓", "unchecked": "⏳"}.get(status or "unchecked", "⏳")
 
 
@@ -438,11 +441,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"<code>{gmail['email']}|{gmail['password']}|{secret}</code>\n"
                 f"₹{float(gmail['reward']):.1f}\n\n"
             )
-            kb.append([
-                InlineKeyboardButton(f"✅ #{gid}", callback_data=f"approve_{gid}_{uid}_{page}_ir"),
-                InlineKeyboardButton(f"🔍 Verify", callback_data=f"verify_smtp_{gid}_{uid}_{page}"),
-                InlineKeyboardButton(f"❌ #{gid}", callback_data=f"reject_{gid}_{uid}_{page}_ir"),
-            ])
+            row = [InlineKeyboardButton(f"✅ #{gid}", callback_data=f"approve_{gid}_{uid}_{page}_ir")]
+            if not DISABLE_SMTP_CHECK or SMTP_PROXY:
+                row.append(InlineKeyboardButton(f"🔍 Verify", callback_data=f"verify_smtp_{gid}_{uid}_{page}"))
+            row.append(InlineKeyboardButton(f"❌ #{gid}", callback_data=f"reject_{gid}_{uid}_{page}_ir"))
+            kb.append(row)
 
         # Export button
         kb.append([
@@ -474,6 +477,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gid = int(parts[2])
         uid = int(parts[3])
         page = int(parts[4])
+
+        if DISABLE_SMTP_CHECK and not SMTP_PROXY:
+            await q.answer("⚠️ SMTP verification is disabled. Set SMTP_PROXY to enable.", show_alert=True)
+            return
 
         await q.answer("🔍 Checking Google servers...", show_alert=False)
 

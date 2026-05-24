@@ -633,10 +633,15 @@ async def verification_worker(app: Application):
     - Never blocks or modifies user-facing flows
     """
     from verifier import check_gmail_exists
+    from config import DISABLE_SMTP_CHECK
     await asyncio.sleep(60)  # wait for bot startup
 
     while not _shutdown:
         try:
+            if DISABLE_SMTP_CHECK:
+                await asyncio.sleep(300)
+                continue
+
             cutoff = (datetime.now() - timedelta(minutes=3)).isoformat()
             with get_db() as conn:
                 c = conn.cursor()

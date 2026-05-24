@@ -15,6 +15,9 @@ import asyncio
 import logging
 import smtplib
 import socket
+from urllib.parse import urlparse
+import socks
+from config import SMTP_PROXY
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,27 @@ STATUS_SUSPICIOUS = "suspicious"
 STATUS_ERROR = "error"
 
 
+class SocksSMTP(smtplib.SMTP):
+    """Subclass of smtplib.SMTP that routes connections through a SOCKS proxy."""
+    def __init__(self, proxy_url, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+        self.proxy_url = proxy_url
+        super().__init__(timeout=timeout)
+
+    def _get_socket(self, host, port, timeout):
+        parsed = urlparse(self.proxy_url)
+        scheme = parsed.scheme or "socks5"
+        proxy_type = socks.SOCKS5 if "socks5" in scheme else socks.SOCKS4
+        return socks.create_connection(
+            (host, port),
+            timeout=timeout,
+            proxy_type=proxy_type,
+            proxy_addr=parsed.hostname,
+            proxy_port=parsed.port or 1080,
+            proxy_username=parsed.username,
+            proxy_password=parsed.password
+        )
+
+
 def _smtp_check_email(email: str) -> tuple[str, str]:
     """
     Perform a single SMTP handshake check against Google's MX server.
@@ -41,7 +65,11 @@ def _smtp_check_email(email: str) -> tuple[str, str]:
     """
     server = None
     try:
-        server = smtplib.SMTP(timeout=SMTP_TIMEOUT)
+        if SMTP_PROXY:
+            server = SocksSMTP(SMTP_PROXY, timeout=SMTP_TIMEOUT)
+        else:
+            server = smtplib.SMTP(timeout=SMTP_TIMEOUT)
+
         server.connect(GMAIL_MX_SERVER, SMTP_PORT)
         server.helo("gmail.com")
         server.mail("check@gmail.com")
