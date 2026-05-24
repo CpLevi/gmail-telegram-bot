@@ -394,24 +394,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 <i>Tap <b>Tasks</b> to start earning!</i>"
     )
 
-    # Only show inline buttons for channel bonus (if unclaimed)
+    # Always send the persistent reply keyboard first so it's always visible
+    main_kb = get_main_reply_keyboard(user.id)
+
     if not claimed:
         text += f"\n\n⚡ Join <b>{TELEGRAM_CHANNEL}</b> to claim ₹1 bonus!"
         channel_url = f"https://t.me/{TELEGRAM_CHANNEL.lstrip('@')}"
-        kb = [
+        inline_kb = [
             [InlineKeyboardButton("📢 Join Channel", url=channel_url)],
             [InlineKeyboardButton("🎁 Claim ₹1 Bonus", callback_data="claim_channel")],
         ]
-        # Send dashboard with inline bonus buttons
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-        # Silently set the main keyboard
-        temp = await update.message.reply_text("⌨️", reply_markup=get_main_reply_keyboard(user.id))
-        try:
-            await temp.delete()
-        except Exception:
-            pass
+        # First: set the persistent reply keyboard (user always has navigation)
+        await update.message.reply_text(
+            "👇 Use these buttons to navigate:",
+            reply_markup=main_kb,
+            parse_mode="HTML"
+        )
+        # Then: send the dashboard with inline bonus buttons
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(inline_kb), parse_mode="HTML")
     else:
-        await update.message.reply_text(text, reply_markup=get_main_reply_keyboard(user.id), parse_mode="HTML")
+        await update.message.reply_text(text, reply_markup=main_kb, parse_mode="HTML")
 
 
 # ==================== USER CALLBACK HANDLER ====================
@@ -441,9 +443,12 @@ async def user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if result:
                     conn.commit()
                     await q.answer("✅ ₹1 added to your balance!", show_alert=True)
+                    # Send bonus message WITH the persistent reply keyboard
                     await q.message.reply_text(
-                        "🎉 <b>Bonus Credited: ₹1</b>\n\nThank you for joining our channel!",
-                        parse_mode="HTML"
+                        "🎉 <b>Bonus Credited: ₹1</b>\n\nThank you for joining our channel!\n\n"
+                        "💡 <i>Use the keyboard buttons below to navigate.</i>",
+                        parse_mode="HTML",
+                        reply_markup=get_main_reply_keyboard(q.from_user.id),
                     )
                 else:
                     await q.answer("You've already claimed this bonus", show_alert=True)
