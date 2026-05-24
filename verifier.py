@@ -15,7 +15,6 @@ import asyncio
 import logging
 import smtplib
 import socket
-import time
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +39,13 @@ def _smtp_check_email(email: str) -> tuple[str, str]:
         (status, detail_message)
         status: "verified" | "suspicious" | "error"
     """
+    server = None
     try:
         server = smtplib.SMTP(timeout=SMTP_TIMEOUT)
         server.connect(GMAIL_MX_SERVER, SMTP_PORT)
         server.helo("gmail.com")
         server.mail("check@gmail.com")
         code, message = server.rcpt(email)
-        server.quit()
 
         msg_text = message.decode("utf-8", errors="ignore")
 
@@ -63,6 +62,12 @@ def _smtp_check_email(email: str) -> tuple[str, str]:
     except Exception as e:
         logger.error(f"Unexpected error in SMTP check for {email}: {e}")
         return STATUS_ERROR, f"Unexpected error: {str(e)[:100]}"
+    finally:
+        if server:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
 
 async def check_gmail_exists(email: str) -> tuple[str, str]:

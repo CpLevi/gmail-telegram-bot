@@ -642,7 +642,7 @@ async def verification_worker(app: Application):
                     WHERE verification_status = 'unchecked'
                       AND task_status = 'confirmed'
                       AND task_confirmed_at IS NOT NULL
-                      AND task_confirmed_at < (NOW() - INTERVAL '3 minutes')::TEXT
+                      AND task_confirmed_at::TIMESTAMP < (NOW() - INTERVAL '3 minutes')
                     ORDER BY task_confirmed_at ASC
                     LIMIT 10
                 """)
