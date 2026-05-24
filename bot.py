@@ -291,7 +291,19 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ── REFERRALS: Show info + referral keyboard ──
     if text == '👥 My Referrals':
-        content, _ = build_referral_content(user_id, context.bot.username)
+        try:
+            content, _ = build_referral_content(user_id, context.bot.username)
+        except Exception as e:
+            logger.error(f"Error building referral content for {user_id}: {e}")
+            ref_link = f"https://t.me/{context.bot.username}?start={user_id}"
+            content = (
+                f"👥 <b>My Referrals</b>\n\n"
+                f"⚠️ Could not load full stats. Please try again later.\n\n"
+                f"🔗 <b>Your Referral Link:</b>\n"
+                f"<code>{ref_link}</code>\n\n"
+                f"<i>Share this link to earn ₹10 per Gmail in the first month "
+                f"and ₹5 per Gmail from the second month onwards!</i>"
+            )
         prev_msg_id = context.user_data.get('last_bot_msg')
         if prev_msg_id:
             try:
