@@ -235,29 +235,85 @@ def build_help_content():
 
 def build_referral_content(user_id, bot_username):
     """Build referral info content."""
+    from datetime import datetime, timedelta
+    
+    thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
+    
     with get_db() as conn:
         c = conn.cursor()
+        
+        # Total referrals
         c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s", (user_id,))
-        ref_count = list(c.fetchone().values())[0]
-        c.execute("SELECT COALESCE(SUM(reward), 0) FROM referrals WHERE referrer_id=%s AND rewarded=1", (user_id,))
-        total_earned = float(list(c.fetchone().values())[0])
-        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND rewarded=0", (user_id,))
-        pending_refs = list(c.fetchone().values())[0]
+        total_refs = list(c.fetchone().values())[0]
+        
+        # Referrals with at least one approved Gmail
+        c.execute("""
+            SELECT COUNT(DISTINCT r.referred_id) 
+            FROM referrals r
+            JOIN gmail g ON r.referred_id = g.user_id
+            WHERE r.referrer_id = %s AND g.status = 'approved'
+        """, (user_id,))
+        refs_with_gmail = list(c.fetchone().values())[0]
+        
+        # New referrals in last 30 days
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id=%s AND date >= %s", (user_id, thirty_days_ago))
+        new_refs_30d = list(c.fetchone().values())[0]
+        
+        # New referrals (last 30 days) with at least one approved Gmail
+        c.execute("""
+            SELECT COUNT(DISTINCT r.referred_id) 
+            FROM referrals r
+            JOIN gmail g ON r.referred_id = g.user_id
+            WHERE r.referrer_id = %s AND r.date >= %s AND g.status = 'approved'
+        """, (user_id, thirty_days_ago))
+        new_refs_with_gmail_30d = list(c.fetchone().values())[0]
+        
+        # Referrals visited in last 30 days
+        c.execute("""
+            SELECT COUNT(DISTINCT r.referred_id) 
+            FROM referrals r
+            JOIN users u ON r.referred_id = u.user_id
+            WHERE r.referrer_id = %s AND u.last_activity_time >= %s
+        """, (user_id, thirty_days_ago))
+        refs_visited_30d = list(c.fetchone().values())[0]
+        
+        # Referrals who registered Gmail in last 30 days
+        c.execute("""
+            SELECT COUNT(DISTINCT r.referred_id) 
+            FROM referrals r
+            JOIN gmail g ON r.referred_id = g.user_id
+            WHERE r.referrer_id = %s AND g.review_date >= %s AND g.status = 'approved'
+        """, (user_id, thirty_days_ago))
+        refs_registered_gmail_30d = list(c.fetchone().values())[0]
+        
+        # Profit last 30 days
+        c.execute("""
+            SELECT COALESCE(SUM(amount), 0) FROM referral_payouts 
+            WHERE referrer_id = %s AND date >= %s
+        """, (user_id, thirty_days_ago))
+        profit_30d = float(list(c.fetchone().values())[0])
+        
+        # Total profit
+        c.execute("SELECT COALESCE(SUM(amount), 0) FROM referral_payouts WHERE referrer_id = %s", (user_id,))
+        total_profit = float(list(c.fetchone().values())[0])
 
     ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    
     text = (
-        f"👥 <b>Refer &amp; Earn</b>\n\n"
-        f"Earn <b>₹5</b> for each friend you refer!\n"
-        f"Reward credited after their first verified task.\n\n"
+        f"👥 <b>Total referrals:</b> {total_refs}\n"
+        f"💪 <b>Referrals who have registered at least one Gmail account:</b> {refs_with_gmail}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Your Stats</b>\n"
-        f"├ 👥 Total referrals: <b>{ref_count}</b>\n"
-        f"├ ⏳ Pending rewards: <b>{pending_refs}</b>\n"
-        f"└ 💰 Total earned: <b>₹{total_earned:.2f}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🆕👥 <b>New referrals who joined in the last 30 days:</b> {new_refs_30d}\n"
+        f"🆕💪 <b>New referrals (last 30 days) with at least one Gmail account:</b> {new_refs_with_gmail_30d}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📆 <b>Referrals who have visited the bot in the last 30 days:</b> {refs_visited_30d}\n"
+        f"📊 <b>Referrals who have registered Gmail accounts within the last 30 days:</b> {refs_registered_gmail_30d}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💸👥 <b>Your profit for the last 30 days, from all referrals:</b> ₹{profit_30d:.2f}\n"
+        f"💸🆕 <b>Your total profit from all referrals:</b> ₹{total_profit:.2f}\n\n"
         f"🔗 <b>Your Referral Link:</b>\n"
         f"<code>{ref_link}</code>\n\n"
-        f"📲 <i>Share this link with friends!</i>"
+        f"<i>Share this link to earn ₹10 per Gmail in the first month and ₹5 per Gmail from the second month onwards!</i>"
     )
     kb = None  # Leaderboard is now a keyboard button
     return text, kb
@@ -358,11 +414,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         c.execute("""INSERT INTO referrals (referrer_id, referred_id, reward, date, rewarded)
                                      VALUES (%s, %s, %s, %s, %s)""",
-                                  (ref_id, user.id, 5, datetime.now().isoformat(), 0))
+                                  (ref_id, user.id, 0, datetime.now().isoformat(), 0))
+                        from config import REFERRAL_RATE_MONTH_1, REFERRAL_RATE_MONTH_2_PLUS
                         await notify_user(context, ref_id,
                             f"🎉 <b>New Referral!</b>\n\n"
                             f"<b>{user.first_name}</b> joined via your link.\n"
-                            f"You'll earn <b>₹5</b> when they complete their first verified task.")
+                            f"You'll earn <b>₹{REFERRAL_RATE_MONTH_1}</b> for every approved Gmail they submit this month, and <b>₹{REFERRAL_RATE_MONTH_2_PLUS}</b> thereafter!")
                     except psycopg2.IntegrityError:
                         pass
 

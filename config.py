@@ -26,6 +26,8 @@ ALLOWED_DOMAINS = ["gmail.com"]
 
 # ==================== FINANCIALS ====================
 DEFAULT_GMAIL_RATE = Decimal("20")  # fallback if DB has no rate set
+REFERRAL_RATE_MONTH_1 = Decimal("10")
+REFERRAL_RATE_MONTH_2_PLUS = Decimal("5")
 WITHDRAWAL_FEE_PERCENT = Decimal("5")
 WITHDRAWAL_FEE_MIN = Decimal("5")
 MAX_WITHDRAWALS_PER_DAY = 3

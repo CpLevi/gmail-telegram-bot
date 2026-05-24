@@ -125,7 +125,7 @@ def init_db():
             rejection_reason TEXT
         )''')
 
-        # Referrals table
+        # Referrals table (tracks who referred who)
         c.execute('''CREATE TABLE IF NOT EXISTS referrals (
             id SERIAL PRIMARY KEY,
             referrer_id BIGINT,
@@ -134,6 +134,16 @@ def init_db():
             date TEXT,
             rewarded INTEGER DEFAULT 0,
             UNIQUE(referred_id)
+        )''')
+
+        # Referral payouts table (tracks ongoing commissions)
+        c.execute('''CREATE TABLE IF NOT EXISTS referral_payouts (
+            id SERIAL PRIMARY KEY,
+            referrer_id BIGINT,
+            referred_id BIGINT,
+            gmail_id INTEGER UNIQUE,
+            amount DECIMAL(10,2),
+            date TEXT
         )''')
 
         # Audit log table
@@ -203,6 +213,7 @@ def init_db():
         columns_to_add = [
             ("users", "notifications_enabled", "INTEGER DEFAULT 1"),
             ("users", "last_submit_time", "TEXT"),
+            ("users", "last_activity_time", "TEXT"),
             ("gmail", "review_date", "TEXT"),
             ("gmail", "rejection_reason", "TEXT"),
             ("gmail", "worker_sent_date", "TEXT"),
@@ -251,6 +262,8 @@ def init_db():
             ("idx_withdrawals_date", "withdrawals", "request_date"),
             ("idx_referrals_referrer", "referrals", "referrer_id"),
             ("idx_referrals_rewarded", "referrals", "rewarded"),
+            ("idx_referral_payouts_referrer", "referral_payouts", "referrer_id"),
+            ("idx_referral_payouts_referred", "referral_payouts", "referred_id"),
             ("idx_users_blocked", "users", "is_blocked"),
         ]
 
@@ -259,6 +272,15 @@ def init_db():
                 c.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})")
             except Exception as e:
                 logger.error(f"Error creating index {idx_name}: {e}")
+
+        # ── Unique constraint migration for referral_payouts.gmail_id ──
+        try:
+            c.execute("""ALTER TABLE referral_payouts
+                         ADD CONSTRAINT uq_referral_payouts_gmail_id UNIQUE (gmail_id)""")
+            conn.commit()
+            logger.info("Added UNIQUE constraint on referral_payouts.gmail_id")
+        except psycopg2.Error:
+            conn.rollback()  # Already exists or data conflict
 
         # ==================== FOREIGN KEY CONSTRAINTS ====================
         # Added safely — skips if constraint already exists or if orphaned data prevents it

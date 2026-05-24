@@ -37,6 +37,64 @@ def _vbadge(status):
     return {"verified": "✅", "suspicious": "⚠️", "error": "❓", "unchecked": "⏳"}.get(status or "unchecked", "⏳")
 
 
+async def process_referral_payout(c, referred_id, count, context=None, gmail_ids=None):
+    """Process ongoing referral commissions for approved Gmails."""
+    from config import REFERRAL_RATE_MONTH_1, REFERRAL_RATE_MONTH_2_PLUS
+    from utils import round_decimal
+    
+    c.execute("SELECT referrer_id, date FROM referrals WHERE referred_id=%s", (referred_id,))
+    ref = c.fetchone()
+    if not ref or not ref['referrer_id']:
+        return
+        
+    referrer_id = ref['referrer_id']
+    try:
+        join_date = datetime.fromisoformat(ref['date'])
+    except Exception:
+        join_date = datetime.now()
+        
+    days_since_join = (datetime.now() - join_date).days
+    rate = REFERRAL_RATE_MONTH_1 if days_since_join < 30 else REFERRAL_RATE_MONTH_2_PLUS
+    
+    # Filter out gmail_ids that already have a payout (prevent double-credit)
+    gmail_ids = gmail_ids or [None] * count
+    unpaid_ids = []
+    for gid in gmail_ids:
+        if gid is not None:
+            c.execute("SELECT 1 FROM referral_payouts WHERE gmail_id=%s", (gid,))
+            if c.fetchone():
+                continue  # Already paid for this Gmail, skip
+        unpaid_ids.append(gid)
+    
+    if not unpaid_ids:
+        return  # All already paid
+    
+    actual_count = len(unpaid_ids)
+    total_payout = round_decimal(rate * actual_count)
+    
+    if total_payout > 0:
+        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s", (total_payout, referrer_id))
+        
+        for gid in unpaid_ids:
+            c.execute("""
+                INSERT INTO referral_payouts (referrer_id, referred_id, gmail_id, amount, date)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (referrer_id, referred_id, gid, rate, datetime.now().isoformat()))
+            
+        c.execute("UPDATE referrals SET rewarded=1 WHERE referred_id=%s AND rewarded=0", (referred_id,))
+        
+        if context:
+            try:
+                c.execute("SELECT first_name FROM users WHERE user_id=%s", (referred_id,))
+                rname_row = c.fetchone()
+                rname = rname_row['first_name'] if rname_row else "A referral"
+                await notify_user(context, referrer_id,
+                    f"🎉 <b>Referral Commission!</b>\n\n"
+                    f"<b>{rname}</b> had {actual_count} task(s) approved.\n"
+                    f"₹{float(total_payout):.2f} credited to your balance!")
+            except Exception:
+                pass
+
 # ==================== ADMIN PANEL ====================
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -553,22 +611,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+1 WHERE user_id=%s",
                           (reward, uid))
 
-                if is_first:
-                    c.execute("""
-                        UPDATE referrals SET rewarded=1
-                        WHERE referred_id=%s AND rewarded=0
-                        RETURNING referrer_id, reward
-                    """, (uid,))
-                    ref = c.fetchone()
-                    if ref:
-                        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s",
-                                  (round_decimal(ref['reward']), ref['referrer_id']))
-                        c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
-                        rname = c.fetchone()['first_name']
-                        await notify_user(context, ref['referrer_id'],
-                            f"🎉 <b>Referral Bonus!</b>\n\n"
-                            f"<b>{rname}</b> completed their first task.\n"
-                            f"₹{float(ref['reward']):.2f} credited!")
+                await process_referral_payout(c, uid, 1, context, [gid])
 
                 conn.commit()
                 log_audit("approve_gmail", ADMIN_ID, uid, f"#{gid} — ₹{float(reward):.2f}")
@@ -639,41 +682,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
+                c.execute("""
+                    UPDATE gmail SET status='approved', review_date=%s
+                    WHERE user_id=%s AND status='pending'
+                    RETURNING id, reward, email
+                """, (datetime.now().isoformat(), uid))
                 gmails = c.fetchall()
 
                 if not gmails:
-                    await q.answer("No pending", show_alert=True)
+                    await q.answer("No pending or already processed", show_alert=True)
                     return
-
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
-                is_first = list(c.fetchone().values())[0] == 0
 
                 total_reward = sum(round_decimal(g['reward']) for g in gmails)
                 count = len(gmails)
 
-                c.execute("""
-                    UPDATE gmail SET status='approved', review_date=%s
-                    WHERE user_id=%s AND status='pending'
-                """, (datetime.now().isoformat(), uid))
-
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+%s WHERE user_id=%s",
                           (total_reward, count, uid))
 
-                if is_first:
-                    c.execute("""
-                        UPDATE referrals SET rewarded=1
-                        WHERE referred_id=%s AND rewarded=0
-                        RETURNING referrer_id, reward
-                    """, (uid,))
-                    ref = c.fetchone()
-                    if ref:
-                        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s",
-                                  (round_decimal(ref['reward']), ref['referrer_id']))
-                        c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
-                        rname = c.fetchone()['first_name']
-                        await notify_user(context, ref['referrer_id'],
-                            f"🎉 <b>Referral Bonus!</b>\n\n{rname} completed their first task.\n₹{float(ref['reward']):.2f} credited!")
+                gmail_ids = [g['id'] for g in gmails]
+                await process_referral_payout(c, uid, count, context, gmail_ids)
 
                 conn.commit()
                 log_audit("approve_all_gmail", ADMIN_ID, uid, f"{count} — ₹{float(total_reward):.2f}")
@@ -703,17 +730,17 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='pending'", (uid,))
-                count = list(c.fetchone().values())[0]
-
-                if count == 0:
-                    await q.answer("No pending", show_alert=True)
-                    return
-
                 c.execute("""
                     UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s
                     WHERE user_id=%s AND status='pending'
+                    RETURNING id
                 """, (datetime.now().isoformat(), "Quality issues", uid))
+                rejected_ids = c.fetchall()
+                count = len(rejected_ids)
+
+                if count == 0:
+                    await q.answer("No pending or already processed", show_alert=True)
+                    return
                 conn.commit()
 
                 log_audit("reject_all_gmail", ADMIN_ID, uid, f"{count} rejected")
@@ -740,41 +767,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT id, reward, email FROM gmail WHERE user_id=%s AND status='in_review'", (uid,))
+                c.execute("""
+                    UPDATE gmail SET status='approved', review_date=%s
+                    WHERE user_id=%s AND status='in_review'
+                    RETURNING id, reward, email
+                """, (datetime.now().isoformat(), uid))
                 gmails = c.fetchall()
 
                 if not gmails:
-                    await q.answer("No in-review", show_alert=True)
+                    await q.answer("No in-review or already processed", show_alert=True)
                     return
-
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='approved'", (uid,))
-                is_first = list(c.fetchone().values())[0] == 0
 
                 total_reward = sum(round_decimal(g['reward']) for g in gmails)
                 count = len(gmails)
 
-                c.execute("""
-                    UPDATE gmail SET status='approved', review_date=%s
-                    WHERE user_id=%s AND status='in_review'
-                """, (datetime.now().isoformat(), uid))
-
                 c.execute("UPDATE users SET balance=balance+%s, approved_gmail=approved_gmail+%s WHERE user_id=%s",
                           (total_reward, count, uid))
 
-                if is_first:
-                    c.execute("""
-                        UPDATE referrals SET rewarded=1
-                        WHERE referred_id=%s AND rewarded=0
-                        RETURNING referrer_id, reward
-                    """, (uid,))
-                    ref = c.fetchone()
-                    if ref:
-                        c.execute("UPDATE users SET balance=balance+%s WHERE user_id=%s",
-                                  (round_decimal(ref['reward']), ref['referrer_id']))
-                        c.execute("SELECT first_name FROM users WHERE user_id=%s", (uid,))
-                        rname = c.fetchone()['first_name']
-                        await notify_user(context, ref['referrer_id'],
-                            f"🎉 <b>Referral Bonus!</b>\n\n{rname} completed their first task.\n₹{float(ref['reward']):.2f} credited!")
+                gmail_ids = [g['id'] for g in gmails]
+                await process_referral_payout(c, uid, count, context, gmail_ids)
 
                 conn.commit()
                 log_audit("ir_approve_all", ADMIN_ID, uid, f"{count} — ₹{float(total_reward):.2f}")
@@ -804,17 +815,17 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with get_db() as conn:
                 c = conn.cursor()
-                c.execute("SELECT COUNT(*) FROM gmail WHERE user_id=%s AND status='in_review'", (uid,))
-                count = list(c.fetchone().values())[0]
-
-                if count == 0:
-                    await q.answer("No in-review", show_alert=True)
-                    return
-
                 c.execute("""
                     UPDATE gmail SET status='rejected', review_date=%s, rejection_reason=%s
                     WHERE user_id=%s AND status='in_review'
+                    RETURNING id
                 """, (datetime.now().isoformat(), "Quality issues", uid))
+                rejected_ids = c.fetchall()
+                count = len(rejected_ids)
+
+                if count == 0:
+                    await q.answer("No in-review or already processed", show_alert=True)
+                    return
                 conn.commit()
 
                 log_audit("ir_reject_all", ADMIN_ID, uid, f"{count} rejected")

@@ -64,7 +64,7 @@ from handlers.admin import (
     receive_max_withdraw, receive_withdraw_reject_reason,
 )
 from database import get_db, init_db, close_pool
-from utils import ensure_user_exists, get_instruction_video_url, rate_limiter
+from utils import ensure_user_exists, get_instruction_video_url, rate_limiter, update_last_activity
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -95,6 +95,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     # Rate limiting
     if not rate_limiter.is_allowed(user_id):
         return  # silently ignore spammed commands
+
+    # Track activity
+    update_last_activity(user_id)
 
     # Delete user's keyboard text from chat (keeps it clean)
     try:
@@ -781,6 +784,9 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if q.from_user and not rate_limiter.is_allowed(q.from_user.id):
         await q.answer("⚠️ Slow down! Try again in a moment.", show_alert=True)
         return
+
+    if q.from_user:
+        update_last_activity(q.from_user.id)
 
     route = route_callback(q.data)
 

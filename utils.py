@@ -208,6 +208,26 @@ def update_submit_time(user_id):
                   (datetime.now().isoformat(), user_id))
 
 
+def update_last_activity(user_id):
+    """Update user's last activity time for tracking active referrals."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            # Update only if it's been more than an hour since last update to avoid excessive DB writes
+            c.execute("""
+                UPDATE users 
+                SET last_activity_time = %s 
+                WHERE user_id = %s 
+                AND (last_activity_time IS NULL OR last_activity_time < %s)
+            """, (
+                datetime.now().isoformat(), 
+                user_id, 
+                (datetime.now() - timedelta(hours=1)).isoformat()
+            ))
+    except Exception as e:
+        logger.error(f"Error updating last activity: {e}")
+
+
 def can_withdraw_today(user_id):
     """Check if user can withdraw today."""
     with get_db() as conn:
@@ -479,8 +499,8 @@ def get_earnings_stats(user_id, period='all'):
                   (user_id, start_date))
         gmail_earnings = float(list(c.fetchone().values())[0])
 
-        c.execute("""SELECT COALESCE(SUM(reward), 0) FROM referrals 
-                    WHERE referrer_id=%s AND rewarded=1 AND date >= %s""",
+        c.execute("""SELECT COALESCE(SUM(amount), 0) FROM referral_payouts 
+                    WHERE referrer_id=%s AND date >= %s""",
                   (user_id, start_date))
         referral_earnings = float(list(c.fetchone().values())[0])
 
