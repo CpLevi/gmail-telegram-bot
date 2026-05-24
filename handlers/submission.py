@@ -266,6 +266,41 @@ async def handle_bulk_task_text(update: Update, context: ContextTypes.DEFAULT_TY
     return BULK_TASK_QTY
 
 
+def restore_active_task(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> dict | None:
+    """Restore active task state from database to context.user_data if memory was cleared."""
+    task_id = context.user_data.get('current_task_id') or context.user_data.get('totp_task_id')
+    gid = context.user_data.get('current_task_gid')
+    totp_secret = context.user_data.get('totp_secret')
+
+    if task_id and gid:
+        return {
+            'task_id': task_id,
+            'id': gid,
+            'totp_secret': totp_secret
+        }
+
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, task_id, totp_secret
+                FROM gmail
+                WHERE user_id = %s AND task_status = 'assigned'
+                ORDER BY id DESC LIMIT 1
+            """, (user_id,))
+            row = c.fetchone()
+            if row:
+                context.user_data['current_task_id'] = row['task_id']
+                context.user_data['current_task_gid'] = row['id']
+                context.user_data['totp_task_id'] = row['task_id']
+                if row.get('totp_secret'):
+                    context.user_data['totp_secret'] = row['totp_secret']
+                return row
+    except Exception as e:
+        logger.error(f"Error restoring active task for {user_id}: {e}")
+    return None
+
+
 # ==================== TASK DONE / 2FA FLOW ====================
 
 async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -302,7 +337,8 @@ async def handle_task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_totp_secret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive 2FA secret, generate OTP, show to user."""
     text = update.message.text.strip()
-    task_id = context.user_data.get('totp_task_id')
+    task = restore_active_task(update.effective_user.id, context)
+    task_id = task['task_id'] if task else None
 
     if not task_id:
         await update.message.reply_text("⚠️ Session expired. Please tap Done on your task again.")
@@ -347,6 +383,11 @@ async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
     secret = context.user_data.get('totp_secret')
     task_id = context.user_data.get('totp_task_id')
 
+    if not secret or not task_id:
+        restore_active_task(q.from_user.id, context)
+        secret = context.user_data.get('totp_secret')
+        task_id = context.user_data.get('totp_task_id')
+
     if not secret:
         await q.answer("⚠️ No secret stored. Send it again.", show_alert=True)
         return TOTP_SECRET
@@ -370,6 +411,10 @@ async def handle_totp_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_totp_refresh_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Text-based: user taps '🔄 Refresh OTP' keyboard button."""
     secret = context.user_data.get('totp_secret')
+    if not secret:
+        restore_active_task(update.effective_user.id, context)
+        secret = context.user_data.get('totp_secret')
+
     if not secret:
         await update.message.reply_text("⚠️ No secret stored. Send the secret key again.")
         return TOTP_SECRET
@@ -395,6 +440,11 @@ async def handle_totp_done_text(update: Update, context: ContextTypes.DEFAULT_TY
     task_id = context.user_data.get('totp_task_id')
     secret = context.user_data.get('totp_secret')
     chat_id = update.effective_chat.id
+
+    if not task_id or not secret:
+        restore_active_task(chat_id, context)
+        task_id = context.user_data.get('totp_task_id')
+        secret = context.user_data.get('totp_secret')
 
     if not task_id:
         from handlers.user import get_main_reply_keyboard
@@ -461,6 +511,11 @@ async def handle_totp_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     task_id = context.user_data.get('totp_task_id')
     secret = context.user_data.get('totp_secret')
+
+    if not task_id or not secret:
+        restore_active_task(q.from_user.id, context)
+        task_id = context.user_data.get('totp_task_id')
+        secret = context.user_data.get('totp_secret')
 
     if not task_id:
         await q.answer("⚠️ Session expired", show_alert=True)

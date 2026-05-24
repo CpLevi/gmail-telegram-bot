@@ -190,7 +190,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ── ACTIVE TASK: Account Created ──
     if text == '✅ Account Created':
-        task_id = context.user_data.get('current_task_id')
+        from handlers.submission import restore_active_task
+        task = restore_active_task(chat_id, context)
+        task_id = task['task_id'] if task else None
         if task_id:
             from handlers.submission import handle_task_done_text
             await handle_task_done_text(update, context, task_id)
@@ -938,7 +940,9 @@ def main():
     # ── Single task 2FA conversation ──
     async def _account_created_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Entry point for '✅ Account Created' keyboard button."""
-        task_id = context.user_data.get('current_task_id')
+        from handlers.submission import restore_active_task, handle_task_done_text
+        task = restore_active_task(update.effective_user.id, context)
+        task_id = task['task_id'] if task else None
         if not task_id:
             await context.bot.send_message(
                 update.effective_chat.id,
