@@ -23,6 +23,52 @@ from database import get_db
 logger = logging.getLogger(__name__)
 
 
+# ==================== RATE LIMITER ====================
+
+class RateLimiter:
+    """Simple in-memory rate limiter for bot commands."""
+
+    def __init__(self, max_requests=15, window_seconds=60):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests = {}  # user_id -> list of timestamps
+
+    def is_allowed(self, user_id):
+        """Check if user is within rate limit. Returns True if allowed."""
+        import time as _time
+        now = _time.time()
+
+        if user_id not in self._requests:
+            self._requests[user_id] = []
+
+        # Clean old entries
+        self._requests[user_id] = [
+            t for t in self._requests[user_id]
+            if now - t < self.window_seconds
+        ]
+
+        if len(self._requests[user_id]) >= self.max_requests:
+            return False
+
+        self._requests[user_id].append(now)
+        return True
+
+    def cleanup(self):
+        """Remove stale entries to prevent memory leaks."""
+        import time as _time
+        now = _time.time()
+        stale_users = [
+            uid for uid, times in self._requests.items()
+            if not times or now - max(times) > self.window_seconds * 2
+        ]
+        for uid in stale_users:
+            del self._requests[uid]
+
+
+# Global rate limiter instance (15 actions per 60 seconds per user)
+rate_limiter = RateLimiter(max_requests=15, window_seconds=60)
+
+
 # ==================== DECIMAL / MATH ====================
 
 def round_decimal(value):
@@ -380,6 +426,36 @@ def set_instruction_video_url(url: str):
         return True
     except Exception as e:
         logger.error(f"Error setting instruction_video_url: {e}")
+        return False
+
+
+def get_max_withdrawal_amount():
+    """Get the maximum withdrawal amount from database."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("SELECT value FROM system_flags WHERE key='max_withdrawal_amount'")
+            result = c.fetchone()
+            if result:
+                return Decimal(result['value'])
+    except Exception as e:
+        logger.error(f"Error fetching max_withdrawal_amount: {e}")
+    from config import DEFAULT_MAX_WITHDRAWAL
+    return DEFAULT_MAX_WITHDRAWAL
+
+
+def set_max_withdrawal_amount(amount):
+    """Set the maximum withdrawal amount. Returns True on success."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO system_flags (key, value) VALUES ('max_withdrawal_amount', %s)
+                ON CONFLICT (key) DO UPDATE SET value = %s
+            """, (str(amount), str(amount)))
+        return True
+    except Exception as e:
+        logger.error(f"Error setting max_withdrawal_amount: {e}")
         return False
 
 

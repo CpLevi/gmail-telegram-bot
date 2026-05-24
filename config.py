@@ -30,6 +30,7 @@ WITHDRAWAL_FEE_PERCENT = Decimal("5")
 WITHDRAWAL_FEE_MIN = Decimal("5")
 MAX_WITHDRAWALS_PER_DAY = 3
 MAX_PENDING_WITHDRAWALS = 2
+DEFAULT_MAX_WITHDRAWAL = Decimal("500")
 
 # ==================== RATE LIMITS ====================
 SUBMIT_COOLDOWN = 20  # seconds
@@ -75,4 +76,14 @@ TASK_STATUS_CONFIRMED = "confirmed"
     ADMIN_SET_VIDEO,      # Admin sets instruction video URL
     COOKIE_INPUT,         # Cookie input (single task, after 2FA)
     BULK_COOKIE_INPUT,    # Cookie input (bulk task, per-account, after 2FA)
-) = range(19)
+    WITHDRAW_CONFIRM,     # User confirming withdrawal details
+    ADMIN_SET_MAX_WITHDRAW,  # Admin setting max withdrawal limit
+) = range(21)
+
+# ==================== STARTUP VALIDATION ====================
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN environment variable is not set!")
+if not DATABASE_URL:
+    raise RuntimeError("❌ DATABASE_URL environment variable is not set!")
+if ADMIN_ID == 0:
+    raise RuntimeError("❌ ADMIN_ID environment variable is not set or is 0!")

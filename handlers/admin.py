@@ -14,6 +14,7 @@ from config import (
     ADMIN_ID,
     ADMIN_WITHDRAWALS_PER_PAGE, USER_SEARCH, BROADCAST_MSG,
     WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_VIDEO,
+    ADMIN_SET_MAX_WITHDRAW,
 )
 from database import get_db
 from utils import (
@@ -22,6 +23,7 @@ from utils import (
     is_task_submission_enabled, set_task_submission,
     is_bulk_submission_enabled, set_bulk_submission,
     get_instruction_video_url, set_instruction_video_url,
+    get_max_withdrawal_amount, set_max_withdrawal_amount,
 )
 
 logger = logging.getLogger(__name__)
@@ -1034,6 +1036,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks_enabled = is_task_submission_enabled()
         bulk_enabled = is_bulk_submission_enabled()
         video_url = get_instruction_video_url()
+        max_withdraw = float(get_max_withdrawal_amount())
         status_icon = "✅" if tasks_enabled else "🔴"
         status_text = "Active" if tasks_enabled else "Paused"
         toggle_label = "🔴 Disable Task Submission" if tasks_enabled else "🟢 Enable Task Submission"
@@ -1046,6 +1049,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ <b>Bot Settings</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Gmail Rate:</b> ₹{current_rate:.0f}/account\n"
+            f"💸 <b>Max Withdrawal:</b> ₹{max_withdraw:.0f}/request\n"
             f"📋 <b>Task Submission:</b> {status_icon} {status_text}\n"
             f"📦 <b>Bulk Submission:</b> {bulk_icon} {bulk_text}\n"
             f"🎥 <b>Video Instruction:</b> {video_status}\n"
@@ -1055,6 +1059,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         kb = [
             [InlineKeyboardButton(f"💰 Change Price (₹{current_rate:.0f})", callback_data="set_price")],
+            [InlineKeyboardButton(f"💸 Max Withdrawal (₹{max_withdraw:.0f})", callback_data="set_max_withdraw")],
             [InlineKeyboardButton(toggle_label, callback_data="toggle_tasks")],
             [InlineKeyboardButton(bulk_toggle_label, callback_data="toggle_bulk")],
             [InlineKeyboardButton("🎥 Set Video Instruction", callback_data="set_video")],
@@ -1122,6 +1127,19 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"/cancel to abort",
         )
         return ADMIN_SET_PRICE
+
+    # ── SET MAX WITHDRAWAL (entry point) ──
+    elif d == "set_max_withdraw":
+        current_max = float(get_max_withdrawal_amount())
+        await safe_edit_or_reply(
+            q,
+            f"💸 <b>Set Max Withdrawal</b>\n\n"
+            f"Current limit: <b>₹{current_max:.0f}</b>/request\n\n"
+            f"Send the new max amount (in ₹):\n\n"
+            f"<i>Examples: 200, 500, 1000</i>\n\n"
+            f"/cancel to abort",
+        )
+        return ADMIN_SET_MAX_WITHDRAW
 
     # ── BLOCK / UNBLOCK ──
     elif d.startswith("block_"):
@@ -1555,3 +1573,51 @@ async def receive_video_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("⚠️ Failed to save. Try again.\n\n/cancel to abort", parse_mode="HTML")
         return ADMIN_SET_VIDEO
+
+
+async def receive_max_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin sets a new max withdrawal limit."""
+    try:
+        new_limit = Decimal(update.message.text.strip())
+
+        if new_limit < 100:
+            await update.message.reply_text(
+                "❌ Minimum limit is ₹100.\n\n/cancel to abort", parse_mode="HTML")
+            return ADMIN_SET_MAX_WITHDRAW
+
+        if new_limit > 50000:
+            await update.message.reply_text(
+                "❌ Maximum limit is ₹50,000.\n\n/cancel to abort", parse_mode="HTML")
+            return ADMIN_SET_MAX_WITHDRAW
+
+        old_limit = float(get_max_withdrawal_amount())
+
+        if set_max_withdrawal_amount(new_limit):
+            log_audit("change_max_withdrawal", ADMIN_ID, None,
+                      f"₹{old_limit:.0f} → ₹{float(new_limit):.0f}")
+
+            kb = [[InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings"),
+                   InlineKeyboardButton("🔙 Admin", callback_data="admin")]]
+            await update.message.reply_text(
+                f"✅ <b>Max Withdrawal Updated!</b>\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Old: ₹{old_limit:.0f}/request\n"
+                f"New: <b>₹{float(new_limit):.0f}/request</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━",
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Failed to update. Try again.", parse_mode="HTML")
+
+        return ConversationHandler.END
+
+    except (ValueError, InvalidOperation):
+        await update.message.reply_text(
+            "❌ Invalid number. Enter a valid amount.\n\n/cancel to abort",
+            parse_mode="HTML")
+        return ADMIN_SET_MAX_WITHDRAW
+    except Exception as e:
+        logger.error(f"Error in receive_max_withdraw: {e}")
+        await update.message.reply_text("⚠️ Error occurred.", parse_mode="HTML")
+        return ConversationHandler.END

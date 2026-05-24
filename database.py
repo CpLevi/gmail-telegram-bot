@@ -1,21 +1,41 @@
 """
 EarnX Gmail Bot — Database Layer
-Connection management, schema initialization, and migrations.
+Connection management with pooling, schema initialization, and migrations.
 """
 
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.pool import ThreadedConnectionPool
 from contextlib import contextmanager
 from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
+# ==================== CONNECTION POOL ====================
+
+_pool = None
+
+
+def _get_pool():
+    """Get or create the connection pool (lazy initialization)."""
+    global _pool
+    if _pool is None or _pool.closed:
+        _pool = ThreadedConnectionPool(
+            minconn=2,
+            maxconn=10,
+            dsn=DATABASE_URL,
+            cursor_factory=RealDictCursor,
+        )
+        logger.info("✅ Database connection pool initialized (2-10 connections)")
+    return _pool
+
 
 @contextmanager
 def get_db():
-    """Get a database connection with automatic commit/rollback."""
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    """Get a database connection from the pool with automatic commit/rollback."""
+    pool = _get_pool()
+    conn = pool.getconn()
     try:
         yield conn
         conn.commit()
@@ -24,7 +44,16 @@ def get_db():
         logger.error(f"Database error: {e}")
         raise
     finally:
-        conn.close()
+        pool.putconn(conn)
+
+
+def close_pool():
+    """Close the connection pool. Call on shutdown."""
+    global _pool
+    if _pool and not _pool.closed:
+        _pool.closeall()
+        logger.info("🔒 Database connection pool closed")
+    _pool = None
 
 
 def init_db():
@@ -165,7 +194,8 @@ def init_db():
             ('gmail_rate', '20'),
             ('task_submission_enabled', 'true'),
             ('bulk_submission_enabled', 'false'),
-            ('instruction_video_url', '')
+            ('instruction_video_url', ''),
+            ('max_withdrawal_amount', '500')
             ON CONFLICT (key) DO NOTHING
         ''')
 
@@ -226,6 +256,31 @@ def init_db():
                 c.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})")
             except Exception as e:
                 logger.error(f"Error creating index {idx_name}: {e}")
+
+        # ==================== FOREIGN KEY CONSTRAINTS ====================
+        # Added safely — skips if constraint already exists or if orphaned data prevents it
+        fk_constraints = [
+            ("gmail", "fk_gmail_user", "user_id", "users", "user_id"),
+            ("withdrawals", "fk_withdrawals_user", "user_id", "users", "user_id"),
+            ("referrals", "fk_referrals_referrer", "referrer_id", "users", "user_id"),
+            ("referrals", "fk_referrals_referred", "referred_id", "users", "user_id"),
+        ]
+
+        for table, constraint_name, column, ref_table, ref_column in fk_constraints:
+            try:
+                # Check if constraint already exists
+                c.execute("""SELECT 1 FROM information_schema.table_constraints
+                             WHERE constraint_name = %s AND table_name = %s""",
+                          (constraint_name, table))
+                if c.fetchone():
+                    continue
+                c.execute(f"""ALTER TABLE {table} ADD CONSTRAINT {constraint_name}
+                              FOREIGN KEY ({column}) REFERENCES {ref_table}({ref_column})""")
+                conn.commit()
+                logger.info(f"✅ Added FK constraint {constraint_name}")
+            except Exception as e:
+                conn.rollback()
+                logger.warning(f"⚠️ Could not add FK {constraint_name}: {e}")
 
         conn.commit()
         logger.info("✅ Database initialized successfully")

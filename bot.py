@@ -15,14 +15,14 @@ from telegram.ext import (
 
 from config import (
     BOT_TOKEN, ADMIN_ID, WEBHOOK_URL, RAILWAY_PUBLIC_DOMAIN, PORT,
-    USDT_ADDRESS, UPI_ID, WITHDRAW_AMT,
+    USDT_ADDRESS, UPI_ID, WITHDRAW_AMT, WITHDRAW_CONFIRM,
     BROADCAST_MSG, USER_SEARCH,
-    WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE,
+    WALLET_AMOUNT, WALLET_REASON, ADMIN_SET_PRICE, ADMIN_SET_MAX_WITHDRAW,
     TASK_CONFIRM, BULK_TASK_QTY, BULK_TASK_CONFIRM,
     SINGLE_TASK_EXPIRY_MINUTES, BULK_TASK_EXPIRY_MINUTES,
     TOTP_SECRET, TOTP_BULK_SECRET, ADMIN_SET_VIDEO,
 )
-from database import get_db, init_db
+
 
 # Handlers
 from handlers.user import (
@@ -51,7 +51,7 @@ from handlers.submission import (
 from handlers.withdrawal import (
     handle_withdraw, handle_withdraw_method, handle_setup_payment,
     handle_set_upi, handle_set_usdt, receive_upi, receive_usdt,
-    receive_withdraw_amt,
+    receive_withdraw_amt, confirm_withdrawal, cancel_withdrawal_confirm,
     handle_set_upi_text, handle_set_usdt_text,
     handle_withdraw_upi_text, handle_withdraw_usdt_text,
 )
@@ -60,8 +60,10 @@ from handlers.admin import (
     receive_user_search, receive_broadcast,
     receive_wallet_amount, receive_wallet_reason,
     receive_new_price, receive_video_url,
+    receive_max_withdraw,
 )
-from utils import ensure_user_exists, get_instruction_video_url
+from database import get_db, init_db, close_pool
+from utils import ensure_user_exists, get_instruction_video_url, rate_limiter
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -88,6 +90,10 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
     text = update.message.text.strip()
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+
+    # Rate limiting
+    if not rate_limiter.is_allowed(user_id):
+        return  # silently ignore spammed commands
 
     # Delete user's keyboard text from chat (keeps it clean)
     try:
@@ -465,7 +471,7 @@ async def auto_message_worker(app: Application):
     """Send auto engagement messages every 6 hours."""
     await asyncio.sleep(30)  # wait for bot startup
 
-    while True:
+    while not _shutdown:
         try:
             with get_db() as conn:
                 c = conn.cursor()
@@ -491,24 +497,34 @@ async def auto_message_worker(app: Application):
 
             sent = 0
             for u in users:
+                if _shutdown:
+                    break
                 try:
                     await app.bot.send_message(u['user_id'], message_text, parse_mode="HTML")
                     sent += 1
+                    await asyncio.sleep(0.05)  # Throttle: ~20 msg/sec to avoid Telegram flood
                 except Exception:
                     pass
 
             logger.info(f"📢 Auto message sent to {sent} users")
+        except asyncio.CancelledError:
+            logger.info("📢 Auto message worker stopped")
+            return
         except Exception as e:
             logger.error(f"Auto message error: {e}")
 
-        await asyncio.sleep(6 * 60 * 60)
+        try:
+            await asyncio.sleep(6 * 60 * 60)
+        except asyncio.CancelledError:
+            logger.info("📢 Auto message worker stopped")
+            return
 
 
 async def task_expiry_worker(app: Application):
     """Check for expired tasks every 2 minutes, mark them expired, and notify users."""
     await asyncio.sleep(60)  # wait for bot startup
 
-    while True:
+    while not _shutdown:
         try:
             with get_db() as conn:
                 c = conn.cursor()
@@ -602,10 +618,22 @@ async def task_expiry_worker(app: Application):
         await asyncio.sleep(120)  # check every 2 minutes
 
 
+# Shutdown flag for graceful worker termination
+_shutdown = False
+
+
 async def post_init(application):
     """Runs after bot starts and event loop is ready."""
     application.create_task(auto_message_worker(application))
     application.create_task(task_expiry_worker(application))
+
+
+async def post_shutdown(application):
+    """Runs after the application shuts down. Cleanup resources."""
+    global _shutdown
+    _shutdown = True
+    close_pool()
+    logger.info("🔒 Bot shutdown complete")
 
 
 # ==================== CALLBACK ROUTER ====================
@@ -618,10 +646,11 @@ def route_callback(data: str) -> str:
         "in_review_queue", "review_detail_", "send_review_",
         "approve_", "reject_", "approve_all_", "reject_all_",
         "irapprove_", "irreject_",
+        "export_pending_", "export_inreview_",
         "withdrawal_queue", "withdraw_approve", "withdraw_reject",
         "user_mgmt", "broadcast", "stats",
         "block_", "wallet_confirm_", "wallet_cancel",
-        "admin_settings", "set_price", "toggle_tasks", "toggle_bulk", "set_video",
+        "admin_settings", "set_price", "set_max_withdraw", "toggle_tasks", "toggle_bulk", "set_video",
     ]
     submission_prefixes = [
         "get_task", "task_done_", "task_skip_",
@@ -659,6 +688,11 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Auto-register old users who interact without hitting /start
     ensure_user_exists(q.from_user)
+
+    # Rate limiting
+    if q.from_user and not rate_limiter.is_allowed(q.from_user.id):
+        await q.answer("⚠️ Slow down! Try again in a moment.", show_alert=True)
+        return
 
     route = route_callback(q.data)
 
@@ -699,10 +733,10 @@ async def main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==================== MAIN ====================
 
 def main():
-    print("🚀 Starting EarnX Bot...")
+    logger.info("🚀 Starting EarnX Bot...")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown).build()
 
     # ── UPI setup conversation ──
     upi_conv = ConversationHandler(
@@ -735,6 +769,10 @@ def main():
         ],
         states={
             WITHDRAW_AMT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_withdraw_amt)],
+            WITHDRAW_CONFIRM: [
+                CallbackQueryHandler(confirm_withdrawal, pattern=r"^wdraw_yes$"),
+                CallbackQueryHandler(cancel_withdrawal_confirm, pattern=r"^wdraw_no$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         allow_reentry=True,
@@ -798,6 +836,15 @@ def main():
         allow_reentry=True,
     )
     app.add_handler(video_conv)
+
+    # ── Max withdrawal setting conversation ──
+    max_withdraw_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_callback, pattern="^set_max_withdraw$")],
+        states={ADMIN_SET_MAX_WITHDRAW: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_max_withdraw)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+    app.add_handler(max_withdraw_conv)
 
     # ── Single task 2FA conversation ──
     async def _account_created_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
