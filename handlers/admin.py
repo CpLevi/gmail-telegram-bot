@@ -28,6 +28,11 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+# Verification badge helper
+def _vbadge(status):
+    """Return emoji badge for verification status."""
+    return {"verified": "✅", "suspicious": "⚠️", "error": "❓", "unchecked": "⏳"}.get(status or "unchecked", "⏳")
+
 
 # ==================== ADMIN PANEL ====================
 
@@ -163,7 +168,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # Get 10 gmails for this page
-            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret
+            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret, verification_status
                         FROM gmail WHERE user_id=%s
                         AND status = 'pending'
                         AND (task_status = 'confirmed' OR task_id IS NULL)
@@ -188,12 +193,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Pending: {total_count} | Page {page + 1}/{total_pages}\n\n"
         )
 
-        # Compact list with copy-paste format
+        # Compact list with copy-paste format + verification badge
         for i, gmail in enumerate(gmails, 1):
             gid = gmail['id']
             secret = gmail.get('totp_secret') or 'N/A'
+            badge = _vbadge(gmail.get('verification_status'))
             text += (
-                f"{i}. <b>#{gid}</b> ⏳\n"
+                f"{i}. <b>#{gid}</b> {badge}\n"
                 f"<code>{gmail['email']}|{gmail['password']}|{secret}</code>\n"
                 f"₹{float(gmail['reward']):.1f}\n\n"
             )
@@ -399,7 +405,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await admin_callback(update, context)
                 return
 
-            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret
+            c.execute("""SELECT id, email, password, reward, submit_date, totp_secret, verification_status
                         FROM gmail WHERE user_id=%s AND status='in_review'
                         ORDER BY submit_date ASC
                         LIMIT %s OFFSET %s""", (uid, per_page, offset))
@@ -426,13 +432,15 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i, gmail in enumerate(gmails, 1):
             gid = gmail['id']
             secret = gmail.get('totp_secret') or 'N/A'
+            badge = _vbadge(gmail.get('verification_status'))
             text += (
-                f"{i}. <b>#{gid}</b> 🔍\n"
+                f"{i}. <b>#{gid}</b> {badge}\n"
                 f"<code>{gmail['email']}|{gmail['password']}|{secret}</code>\n"
                 f"₹{float(gmail['reward']):.1f}\n\n"
             )
             kb.append([
                 InlineKeyboardButton(f"✅ #{gid}", callback_data=f"approve_{gid}_{uid}_{page}_ir"),
+                InlineKeyboardButton(f"🔍 Verify", callback_data=f"verify_smtp_{gid}_{uid}_{page}"),
                 InlineKeyboardButton(f"❌ #{gid}", callback_data=f"reject_{gid}_{uid}_{page}_ir"),
             ])
 
@@ -459,6 +467,52 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         kb.append([InlineKeyboardButton("🔙 Back to In Review", callback_data="in_review_queue")])
         await safe_edit_or_reply(q, text, InlineKeyboardMarkup(kb))
+
+    # ── ON-DEMAND VERIFICATION (SMTP) ──
+    elif d.startswith("verify_smtp_"):
+        parts = d.split("_")
+        gid = int(parts[2])
+        uid = int(parts[3])
+        page = int(parts[4])
+
+        await q.answer("🔍 Checking Google servers...", show_alert=False)
+
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                c.execute("SELECT email FROM gmail WHERE id=%s", (gid,))
+                row = c.fetchone()
+
+            if not row:
+                await q.answer("❌ Gmail not found", show_alert=True)
+                return
+
+            email = row['email']
+            from verifier import check_gmail_exists
+
+            status, detail = await check_gmail_exists(email)
+
+            with get_db() as conn:
+                c = conn.cursor()
+                c.execute("""
+                    UPDATE gmail
+                    SET verification_status = %s, verification_checked_at = %s
+                    WHERE id = %s
+                """, (status, datetime.now().isoformat(), gid))
+
+            # Display popup alert of the result
+            status_emoji = _vbadge(status)
+            await q.answer(f"{status_emoji} Result: {status.upper()}\n{detail}", show_alert=True)
+
+            # Refresh page to show updated badge
+            q.data = f"review_detail_{uid}_{page}"
+            await admin_callback(update, context)
+            return
+
+        except Exception as e:
+            logger.error(f"Error in manual SMTP check for #{gid}: {e}")
+            await q.answer("⚠️ Error occurred during SMTP check", show_alert=True)
+            return
 
     # ── APPROVE SINGLE (from Pending or In Review) ──
     elif d.startswith("approve_") and not d.startswith("approve_all_"):

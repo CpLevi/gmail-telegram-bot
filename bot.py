@@ -618,6 +618,84 @@ async def task_expiry_worker(app: Application):
         await asyncio.sleep(120)  # check every 2 minutes
 
 
+async def verification_worker(app: Application):
+    """Background worker: verify pending Gmail submissions via SMTP.
+    
+    Safety design:
+    - Runs every 5 minutes
+    - Only checks accounts confirmed at least 3 minutes ago (propagation buffer)
+    - Processes max 10 per cycle to avoid Google rate limiting
+    - 2-second delay between checks
+    - Never blocks or modifies user-facing flows
+    """
+    from verifier import check_gmail_exists
+    await asyncio.sleep(60)  # wait for bot startup
+
+    while not _shutdown:
+        try:
+            with get_db() as conn:
+                c = conn.cursor()
+                # Find confirmed submissions that are unchecked and at least 3 minutes old
+                c.execute("""
+                    SELECT id, email, task_confirmed_at
+                    FROM gmail
+                    WHERE verification_status = 'unchecked'
+                      AND task_status = 'confirmed'
+                      AND task_confirmed_at IS NOT NULL
+                      AND task_confirmed_at < (NOW() - INTERVAL '3 minutes')::TEXT
+                    ORDER BY task_confirmed_at ASC
+                    LIMIT 10
+                """)
+                pending = c.fetchall()
+
+            if not pending:
+                await asyncio.sleep(300)  # 5 minutes
+                continue
+
+            checked = 0
+            for row in pending:
+                if _shutdown:
+                    break
+
+                gid = row['id']
+                email = row['email']
+
+                try:
+                    status, detail = await check_gmail_exists(email)
+
+                    with get_db() as conn:
+                        c = conn.cursor()
+                        c.execute("""
+                            UPDATE gmail
+                            SET verification_status = %s, verification_checked_at = %s
+                            WHERE id = %s
+                        """, (status, datetime.now().isoformat(), gid))
+
+                    checked += 1
+                    logger.info(f"📧 Verification [{status.upper()}] #{gid}: {email} — {detail}")
+
+                except Exception as e:
+                    logger.error(f"Error verifying #{gid} ({email}): {e}")
+
+                # Rate limiting: 2-second gap between checks
+                await asyncio.sleep(2)
+
+            if checked > 0:
+                logger.info(f"📧 Verification worker: checked {checked} accounts this cycle")
+
+        except asyncio.CancelledError:
+            logger.info("📧 Verification worker stopped")
+            return
+        except Exception as e:
+            logger.error(f"Verification worker error: {e}")
+
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+        except asyncio.CancelledError:
+            logger.info("📧 Verification worker stopped")
+            return
+
+
 # Shutdown flag for graceful worker termination
 _shutdown = False
 
@@ -626,6 +704,7 @@ async def post_init(application):
     """Runs after bot starts and event loop is ready."""
     application.create_task(auto_message_worker(application))
     application.create_task(task_expiry_worker(application))
+    application.create_task(verification_worker(application))
 
 
 async def post_shutdown(application):
