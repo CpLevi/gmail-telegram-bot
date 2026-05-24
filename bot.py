@@ -730,6 +730,7 @@ def route_callback(data: str) -> str:
         "in_review_queue", "review_detail_", "send_review_",
         "approve_", "reject_", "approve_all_", "reject_all_",
         "irapprove_", "irreject_",
+        "verify_smtp_",
         "export_pending_", "export_inreview_",
         "withdrawal_queue", "withdraw_approve", "withdraw_reject",
         "user_mgmt", "broadcast", "stats",
