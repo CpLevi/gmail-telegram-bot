@@ -227,7 +227,9 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # ── ACTIVE TASK: Cancel Task ──
     if text == '❌ Cancel Task':
-        task_id = context.user_data.get('current_task_id')
+        from handlers.submission import restore_active_task
+        task = restore_active_task(chat_id, context)
+        task_id = task['task_id'] if task else None
         if task_id:
             from handlers.submission import handle_task_skip_text
             await handle_task_skip_text(update, context, task_id)
