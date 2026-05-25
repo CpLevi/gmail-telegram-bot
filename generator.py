@@ -394,75 +394,46 @@ def _random_code(length=3):
 
 def _generate_email_username(first_name: str, last_name: str, birth_year: int) -> str:
     """
-    Generate a BULLETPROOF unique email username.
-
-    STRATEGY: Every email has name parts + random alphanumeric code (2-4 chars).
-    This gives MILLIONS of unique combos per name.
-
-    Examples:
-        john.smith.k8m3@gmail.com
-        rajesh.x7r.sharma@gmail.com
-        emily.brown98.q4@gmail.com
-
-    With 36^3 = 46,656 random codes × 16 patterns × 200+ names = BILLIONS of combos.
-    Username collision is mathematically near-impossible.
+    Generate a BULLETPROOF unique email username using only letters, numbers, and at most one period.
+    Gmail only allows letters (a-z), numbers (0-9), and periods (.).
     """
-    fn = first_name.lower()
-    ln = last_name.lower()
+    # Ensure only alphanumeric characters are used to prevent invalid emails
+    fn = "".join(c for c in first_name.lower() if c.isalnum())
+    ln = "".join(c for c in last_name.lower() if c.isalnum())
 
     yr = str(birth_year)[-2:]           # "98"
     code2 = _random_code(2)             # "k8"
     code3 = _random_code(3)             # "k8m"
     d2 = str(random.randint(10, 99))    # "47"
     d3 = str(random.randint(100, 999))  # "347"
-
     code4 = _random_code(4)             # "k8m3"
 
     patterns = [
-        # Name + code (cleanest — looks like a person's custom tag)
-        f"{fn}.{ln}.{code3}",               # john.smith.k8m
-        f"{fn}{ln}.{code3}",                # johnsmith.k8m
-        f"{fn}.{code2}.{ln}",               # john.k8.smith
-        f"{fn}{code3}{ln}",                 # johnk8msmith
-
-        # Name + year + code (most natural + guaranteed unique)
-        f"{fn}.{ln}{yr}.{code2}",           # john.smith98.k8
+        # No dots - Most genuine and common formats
+        f"{fn}{ln}{d2}{code2}",             # johnsmith47k8
         f"{fn}{ln}{yr}{code2}",             # johnsmith98k8
-        f"{fn}.{ln}.{yr}{code2}",           # john.smith.98k8
-        f"{fn}{yr}.{ln}.{code2}",           # john98.smith.k8
-
-        # Name + digits + code
-        f"{fn}.{ln}{d3}{code2}",            # john.smith347k8
-        f"{fn}{d2}.{ln}.{code2}",           # john47.smith.k8
-        f"{fn}.{ln}.{d2}{code2}",           # john.smith.47k8
-
-        # Initial combos + code (shorter)
-        f"{fn[0]}{ln}{yr}{code2}",          # jsmith98k8
-        f"{fn}.{ln[0]}.{yr}{code3}",        # john.s.98k8m
-        f"{fn[0]}.{ln}.{code3}",            # j.smith.k8m
-
-        # Year + code combos
+        f"{fn}{ln}{code3}",                 # johnsmithk8m
+        f"{fn}{ln}{code4}",                 # johnsmithk8m3
+        f"{fn[:2]}{ln}{yr}{code3}",         # josmith98k8m
+        f"{fn}{d3}{code2}",                 # john347k8
         f"{fn}{ln}{birth_year}{code2}",     # johnsmith1998k8
-        f"{fn}.{ln}.{birth_year}",          # john.smith.1998
 
-        # ─── NEW: underscore & extra combos for more uniqueness ───
-        f"{fn}_{ln}.{code3}",               # john_smith.k8m
-        f"{fn}_{ln}{yr}",                   # john_smith98
-        f"{fn}.{ln}_{code3}",               # john.smith_k8m
+        # One dot - Still generic and clean
+        f"{fn}.{ln}{d2}{code2}",            # john.smith47k8
+        f"{fn}.{ln}{yr}{code2}",            # john.smith98k8
+        f"{fn}.{ln}{code3}",                # john.smithk8m
+        f"{fn}.{ln}{birth_year}{code2}",    # john.smith1998k8
+        
+        # Other simple variants without special chars
+        f"{fn}{code3}{ln}",                 # johnk8msmith
         f"{fn}{d2}{ln}{code2}",             # john47smithk8
-        f"{fn[0]}{ln}.{code4}",             # jsmith.k8m3
-        f"{fn}_{code3}_{ln}",               # john_k8m_smith
-        f"{fn}.{ln}{d2}.{code3}",           # john.smith47.k8m
-        f"{fn[0]}.{ln[0]}.{fn}{code3}",     # j.s.johnk8m
+        f"{fn[:1]}{ln}{code4}",             # jsmithk8m3
     ]
 
     weights = [
-        12, 8, 8, 5,            # name+code (33%)
-        10, 7, 5, 3,            # name+year+code (25%)
-        3, 3, 3,                # name+digits+code (9%)
-        3, 3, 3,                # initials+code (9%)
-        4, 4,                   # year+code (8%)
-        4, 3, 3, 2, 2, 2, 2, 2, # new underscore/extra combos (16%)
+        15, 15, 12, 10, 8, 5, 8, # No dots
+        8, 8, 5, 3,              # One dot
+        1, 1, 1,                 # Other variants
     ]
 
     return random.choices(patterns, weights=weights, k=1)[0]
